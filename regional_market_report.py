@@ -992,12 +992,9 @@ def format_report(data):
             lines.append(f'• IDX {label}: {v}')
     lines.append('')
 
-    icbi = data.get('ICBI')
-    if isinstance(icbi, dict):
-        icbi_close = icbi.get('close', '')
-        icbi_pct = get_change(icbi)
-        if icbi_close:
-            lines.append(f'• ICBI: {icbi_close} ({icbi_pct})' if icbi_pct else f'• ICBI: {icbi_close}')
+    icbi_val = kv_full('ICBI')
+    if icbi_val:
+        lines.append(f'• ICBI: {icbi_val}')
     lines.append('')
 
     # ── FX & Bonds ──
