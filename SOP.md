@@ -6,11 +6,13 @@ setiap hari kerja pukul 05:00 WIB dan mengirimkan laporan terformat ke Telegram.
 
 ## Pipeline
 ```
-regional_market_report.py  →  stdout (report) → Telegram
-     (all-in-one)
+regional_pipeline.py (Hermes script, no_agent mode)
+  └─▶ regional_market_report.py  →  cache/regional_report.txt
+  └─▶ baca file → stdout (clean report) → Telegram
 ```
 
-Satu file: scrape + format + print. Tidak ada subprocess atau file perantara.
+Script `regional_pipeline.py` di `~/AppData/Local/hermes/scripts/` jalanin pipeline,
+baca output dari `cache/regional_report.txt`, kirim report bersih (tanpa progress text).
 
 ## Cara Menjalankan
 ```powershell
@@ -29,8 +31,9 @@ cd C:\Users\satri\code\regionaldatacollector
 ## Cron
 - **Waktu:** Setiap hari kerja pukul 05:00 WIB
 - **Job name:** Regional Markets Screener + News
-- **Perintah:** `.\venv\Scripts\python.exe regional_market_report.py`
-- **Workdir:** `C:\Users\satri\code\regionaldatacollector`
+- **Mode:** `no_agent=True` — langsung kirim stdout script ke Telegram
+- **Script:** `regional_pipeline.py` di `~/AppData/Local/hermes/scripts/`
+- ⚡ Output diambil dari `cache/regional_report.txt`, **bukan stdout pipeline langsung** (menghindari progress text)
 
 ## Dependencies
 - curl_cffi — HTTP requests with impersonation
