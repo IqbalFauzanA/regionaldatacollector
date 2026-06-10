@@ -783,7 +783,7 @@ def collect_data():
 
     log("US Bonds...")
     DATA.update(parse_table_pages([
-        ('US Bonds', 'https://www.investing.com/rates-bonds/usa-government-bonds', 1, 2, -1, -1),
+        ('US Bonds', 'https://www.investing.com/rates-bonds/usa-government-bonds', 1, 2, 6, 7),
     ]))
 
     log("Indo Bonds...")
@@ -1062,14 +1062,10 @@ def format_report(data):
         if dxy_fmt:
             lines.append(f'• DXY: {dxy_fmt}')
 
-    us10 = data.get('US10Yr')
-    us2 = data.get('US2Yr')
-    us30 = data.get('US30Yr')
-    us10_v = close_str(us10) if isinstance(us10, dict) else ''
-    us2_v = close_str(us2) if isinstance(us2, dict) else ''
-    us30_v = close_str(us30) if isinstance(us30, dict) else ''
-    if us10_v or us2_v or us30_v:
-        lines.append(f'• US10Yr: {us10_v}% | US2Yr: {us2_v}% | US30Yr: {us30_v}%')
+    for key, label in [('US10Yr', 'US10Yr'), ('US2Yr', 'US2Yr'), ('US30Yr', 'US30Yr')]:
+        v = kv_full(key)
+        if v:
+            lines.append(f'• {label}: {v}')
 
     indo10 = data.get('Indo10Yr')
     if isinstance(indo10, dict):
