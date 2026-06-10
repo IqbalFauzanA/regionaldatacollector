@@ -1083,20 +1083,19 @@ def format_report(data):
     for key, label in [('CPO', 'CPO'), ('Woodpulp', 'Woodpulp'),
                        ('Ammonia', 'Ammonia'), ('Corn', 'Corn'),
                        ('Wheat', 'Wheat'), ('SoybeanOil', 'Soybean Oil')]:
-        d = data.get(key)
-        if isinstance(d, dict):
-            if 'contracts' in d:
-                continue
-            c = close_str(d)
-            p = get_change(d)
-            if c:
-                note = ''
-                if key == 'Ammonia':
-                    note_d = d.get('note', '')
-                    note = f' ({note_d})' if note_d else ''
-                lines.append(f'• {label}: {c} ({p}){note}' if p else f'• {label}: {c}{note}')
-        elif isinstance(d, str):
-            lines.append(f'• {label}: {d}')
+        if key == 'Ammonia':
+            d = data.get(key)
+            if isinstance(d, dict) and 'contracts' not in d:
+                c = close_str(d)
+                p = get_change(d)
+                if c:
+                    note = d.get('note', '')
+                    note_str = f' ({note})' if note else ''
+                    lines.append(f'• {label}: {c} ({p}){note_str}' if p else f'• {label}: {c}{note_str}')
+        else:
+            v = kv_full(key)
+            if v:
+                lines.append(f'• {label}: {v}')
     lines.append('')
 
     # ── ETFs & Stocks ──
