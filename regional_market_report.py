@@ -809,19 +809,14 @@ def fmt(d):
         pct_clean = pct
         if pct_clean.startswith('+'):
             pct_clean = pct_clean[1:]
-        # Skip if effectively zero
-        if pct_clean in ('0', '0%', '0.0', '0.00', '0.0%', '0.00%'):
-            pct_clean = ''
+        # Add % if missing (Investing API returns bare numbers)
+        if pct_clean and not pct_clean.endswith('%'):
+            pct_clean += '%'
+        if chg and chg not in ('', 'None'):
+            return f'{close} ({chg} / {pct_clean})'
         else:
-            # Add % if missing (Investing API returns bare numbers)
-            if pct_clean and not pct_clean.endswith('%'):
-                pct_clean += '%'
-        if pct_clean:
-            if chg and chg not in ('', '0', 'None'):
-                return f'{close} ({chg} / {pct_clean})'
-            else:
-                return f'{close} ({pct_clean})'
-    if chg and chg not in ('', '0', 'None'):
+            return f'{close} ({pct_clean})'
+    if chg and chg not in ('', 'None'):
         return f'{close} ({chg})'
     return close
 
