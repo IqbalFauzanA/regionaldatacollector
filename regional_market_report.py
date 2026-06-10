@@ -1084,14 +1084,12 @@ def format_report(data):
                        ('Ammonia', 'Ammonia'), ('Corn', 'Corn'),
                        ('Wheat', 'Wheat'), ('SoybeanOil', 'Soybean Oil')]:
         if key == 'Ammonia':
-            d = data.get(key)
-            if isinstance(d, dict) and 'contracts' not in d:
-                c = close_str(d)
-                p = get_change(d)
-                if c:
-                    note = d.get('note', '')
-                    note_str = f' ({note})' if note else ''
-                    lines.append(f'• {label}: {c} ({p}){note_str}' if p else f'• {label}: {c}{note_str}')
+            v = kv_full(key)
+            if v:
+                d = data.get(key, {})
+                note = d.get('note', '') if isinstance(d, dict) else ''
+                note_str = f' ({note})' if note else ''
+                lines.append(f'• {label}: {v}{note_str}')
         else:
             v = kv_full(key)
             if v:
