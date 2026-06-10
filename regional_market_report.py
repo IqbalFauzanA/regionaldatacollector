@@ -690,6 +690,51 @@ def parse_barchart_coal():
     return result
 
 
+def parse_bursa_cpo():
+    """FCPO from Bursa Malaysia derivatives market table, row 3."""
+    result = {}
+    try:
+        resp = fetch(
+            'https://www.bursamalaysia.com/trade/market/derivatives_market',
+            impersonate='chrome120',
+            timeout=30,
+        )
+        bs = BeautifulSoup(resp.text, 'lxml')
+        tables = bs.find_all('table')
+        for table in tables:
+            rows = table.find_all('tr')
+            if len(rows) < 4:
+                continue
+            # Find the FCPO table: first header cell should say "Futures/Months"
+            header_cells = rows[0].find_all(['th', 'td'])
+            if not header_cells or 'Futures' not in header_cells[0].get_text(strip=True):
+                continue
+            # Row index 2 = 3rd row (0-based), the row the user wants
+            row = rows[2]
+            cells = row.find_all(['td', 'th'])
+            if len(cells) < 4:
+                continue
+            last_raw = cells[1].get_text(strip=True).replace(',', '')
+            chg_raw = cells[2].get_text(strip=True).replace(',', '')
+            try:
+                close = float(last_raw)
+                change = float(chg_raw)
+                prev_close = close - change
+                pct = round((change / prev_close) * 100, 2) if prev_close else 0.0
+                result['CPO'] = {
+                    'close': f'{close:.2f}',
+                    'change': f'{change:+.2f}',
+                    'change_pct': f'{pct:+.2f}%',
+                    'source': 'Bursa Malaysia',
+                }
+            except (ValueError, TypeError):
+                pass
+            break
+    except Exception as e:
+        print(f'  WARN Bursa CPO: {type(e).__name__}: {str(e)[:60]}', file=sys.stderr)
+    return result
+
+
 # ──────────────────── DATA COLLECTION ────────────────────
 
 def collect_data():
@@ -718,10 +763,12 @@ def collect_data():
     log("Coal from Barchart...")
     DATA.update(parse_barchart_coal())
 
+    log("Bursa CPO...")
+    DATA.update(parse_bursa_cpo())
+
     log("Single pages...")
     single_pages = [
         ('Iron Ore', 'https://www.investing.com/commodities/iron-ore-62-cfr-futures', 'Iron Ore 62%'),
-        ('CPO', 'https://id.investing.com/commodities/malaysian-crude-palm-oil-futures', 'CPO'),
         ('Woodpulp', 'https://id.investing.com/commodities/shfe-bleached-softwood-kraft-pulp-futures', 'Woodpulp'),
         ('Tin', 'https://www.investing.com/commodities/tin', 'Timah'),
         ('BCOMIN', 'https://www.investing.com/indices/bloomberg-industrial-metals', 'BCOMIN'),
