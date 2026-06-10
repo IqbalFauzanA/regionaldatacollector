@@ -1,0 +1,23 @@
+# Virtual environment
+venv/
+
+# Cache files
+cache/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.commandcode/
+.vscode/
+.idea/
+
+# Temp
+prompt.txt
+image*.png
