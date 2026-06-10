@@ -792,8 +792,8 @@ def collect_data():
     log("ICBI...")
     DATA.update(parse_icbi())
 
-    log("Yahoo Finance (VIX, ETFs)...")
-    for ticker, code in [('^VIX', 'VIX'), ('EIDO', 'EIDO'), ('EEM', 'EEM'), ('TLK', 'TLKM')]:
+    log("Yahoo Finance (VIX, ETFs, STI)...")
+    for ticker, code in [('^VIX', 'VIX'), ('EIDO', 'EIDO'), ('EEM', 'EEM'), ('TLK', 'TLKM'), ('^STI', 'STI')]:
         log(f"  {code}...")
         DATA.update(parse_yahoo_finance(ticker, code))
 
@@ -1001,10 +1001,8 @@ def format_report(data):
     # ── Asia ──
     lines.append('**🌏 Asia**')
     for key, label in [('Nikkei', 'Nikkei'), ('Shanghai', 'Shanghai'),
-                       ('SZSE Component', 'SZSE'), ('HSI', 'HSI'),
-                       ('Taiwan Weighted', 'Taiwan'), ('KOSPI', 'KOSPI'),
-                       ('Nifty 50', 'Nifty 50'), ('SET', 'SET'),
-                       ('S&P/ASX 200', 'S&P/ASX 200'), ('PSEi Composite', 'PSEi')]:
+                       ('HSI', 'HSI'), ('KOSPI', 'KOSPI'),
+                       ('STI', 'STI')]:
         v = kv_full(key)
         if v:
             lines.append(f'• {label}: {v}')
