@@ -277,14 +277,25 @@ def parse_yahoo_finance(ticker, code_name):
                 price_el = bs.find('fin-streamer', {'data-field': 'regularMarketPrice'})
             price = price_el.get('data-value') or price_el.get_text(strip=True) if price_el else None
 
+        # First try: fin-streamer with matching data-symbol
         change_el = bs.find('fin-streamer', {'data-field': 'regularMarketChange', 'data-symbol': ticker})
-        if not change_el:
-            change_el = bs.find('fin-streamer', {'data-field': 'regularMarketChange'})
         pct_el = bs.find('fin-streamer', {'data-field': 'regularMarketChangePercent', 'data-symbol': ticker})
-        if not pct_el:
-            pct_el = bs.find('fin-streamer', {'data-field': 'regularMarketChangePercent'})
         change = change_el.get('data-value') or change_el.get_text(strip=True) if change_el else ''
         pct = pct_el.get('data-value') or pct_el.get_text(strip=True) if pct_el else ''
+
+        # Second try: if fin-streamer not found for this ticker, parse from parent text
+        if not change_el and qsp:
+            parent_txt = qsp.parent.get_text(' ', strip=True) if qsp.parent else ''
+            m = re.search(r'([+-]?\d+[\d.]*)\s*\(([+-]?\d+[\d.]*)%\)', parent_txt)
+            if m:
+                change = m.group(1)
+                pct = m.group(2)
+            else:
+                m2 = re.search(r'([+-]?\d+[\d.]*)\s*\(([+-]?\d+[\d.]*)', parent_txt)
+                if m2:
+                    change = m2.group(1)
+                    pct = m2.group(2)
+
         if price:
             price = price.replace(',', '')
             valid_change = change or ''
@@ -718,9 +729,6 @@ def collect_data():
         ('USD/IDR', 'https://www.investing.com/currencies/usd-idr', 'IDR'),
         ('EUR/USD', 'https://www.investing.com/currencies/eur-usd', 'Euro'),
         ('Gold Spot', 'https://www.investing.com/currencies/xau-usd', 'Gold(Spot)'),
-        ('EIDO', 'https://id.investing.com/etfs/msci-indonesia-investable-market', 'EIDO'),
-        ('EEM', 'https://www.investing.com/etfs/ishares-msci-emg-markets', 'EEM'),
-        ('TLK ADR', 'https://www.investing.com/equities/pt-telekomunikasi-indo.-(persero)', 'TLKM'),
     ]
     for label, url, code in single_pages:
         log(f"  {label}...")
@@ -737,8 +745,8 @@ def collect_data():
     log("ICBI...")
     DATA.update(parse_icbi())
 
-    log("Yahoo Finance (VIX)...")
-    for ticker, code in [('^VIX', 'VIX')]:
+    log("Yahoo Finance (VIX, ETFs)...")
+    for ticker, code in [('^VIX', 'VIX'), ('EIDO', 'EIDO'), ('EEM', 'EEM'), ('TLK', 'TLKM')]:
         log(f"  {code}...")
         DATA.update(parse_yahoo_finance(ticker, code))
 
