@@ -559,15 +559,32 @@ def parse_jisdor():
             timeout=25,
         )
         soup = BeautifulSoup(resp.text, 'lxml')
+        rates = []
         for td in soup.find_all('td'):
             txt = td.get_text(strip=True)
             m = re.match(r'Rp(\d{2,3}\.\d{3})[,\s]', txt)
             if m:
-                result['Jisdor'] = {
-                    'close': m.group(1).replace('.', ','),
-                    'source': 'BI',
-                }
-                break
+                rates.append(m.group(1).replace('.', ','))
+        if len(rates) >= 2:
+            curr = rates[0].replace(',', '')
+            prev = rates[1].replace(',', '')
+            curr_f = float(curr)
+            prev_f = float(prev)
+            change = round(curr_f - prev_f, 0)
+            change_pct = round(((curr_f - prev_f) / prev_f) * 100, 2)
+            result['Jisdor'] = {
+                'close': rates[0],
+                'change': f'{change:+.0f}',
+                'change_pct': f'{change_pct:+.2f}%',
+                'source': 'BI',
+            }
+        elif len(rates) == 1:
+            result['Jisdor'] = {
+                'close': rates[0],
+                'change': '',
+                'change_pct': '',
+                'source': 'BI',
+            }
     except Exception as e:
         print(f"  WARN JISDOR: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
     return result
@@ -951,9 +968,9 @@ def format_report(data):
     kom_val = kv_full('IDX Kompas 100')
     if kom_val:
         lines.append(f'• Kompas 100: {kom_val}')
-    jisdor = data.get('Jisdor')
-    if jisdor:
-        lines.append(f'• Jisdor: {close_str(jisdor)}')
+    jisdor_val = kv_full('Jisdor')
+    if jisdor_val:
+        lines.append(f'• Jisdor: {jisdor_val}')
 
     idx_sectors = [
         ('IDXEnergy', 'Energy'),
