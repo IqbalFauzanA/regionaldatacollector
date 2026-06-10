@@ -29,11 +29,12 @@ cd C:\Users\satri\code\regionaldatacollector
 ```
 
 ## Cron
-- **Waktu:** Setiap hari kerja pukul 05:00 WIB
+- **Waktu:** Setiap hari kerja pukul **05:30 WIB**
 - **Job name:** Regional Markets Screener + News
-- **Mode:** `no_agent=True` — langsung kirim stdout script ke Telegram
-- **Script:** `regional_pipeline.py` di `~/AppData/Local/hermes/scripts/`
-- ⚡ Output diambil dari `cache/regional_report.txt`, **bukan stdout pipeline langsung** (menghindari progress text)
+- **Mode:** Agent-based — jalanin pipeline, baca output dari `cache/regional_report.txt`, kirim report bersih
+- **Prompt:** Jalankan pipeline, baca file report, kirim mentah-mentah (tanpa tambahan teks)
+- **Workdir:** `C:\Users\satri\code\regionaldatacollector`
+- ⚡ Output diambil dari file, **bukan stdout pipeline langsung** (menghindari progress text)
 
 ## Dependencies
 - curl_cffi — HTTP requests with impersonation
