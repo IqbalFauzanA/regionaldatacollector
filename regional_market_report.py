@@ -992,9 +992,7 @@ def format_report(data):
 
     # ── Europe ──
     lines.append('**🇪🇺 Europe**')
-    for key, label in [('DAX', 'DAX'), ('FTSE', 'FTSE'), ('CAC', 'CAC'),
-                       ('Euro Stoxx 50', 'Euro Stoxx 50'), ('FTSE MIB', 'FTSE MIB'),
-                       ('SMI', 'SMI')]:
+    for key, label in [('DAX', 'DAX'), ('FTSE', 'FTSE'), ('CAC', 'CAC')]:
         v = kv_full(key)
         if v:
             lines.append(f'• {label}: {v}')
