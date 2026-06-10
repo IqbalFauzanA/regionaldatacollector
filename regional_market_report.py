@@ -573,39 +573,36 @@ def parse_jisdor():
     return result
 
 
-# ──────────────── DXY from CNBC ────────────────
+# ──────────────── DXY from Yahoo Finance API ────────────────
 
-def parse_cnbc_dxy():
+def parse_yahoo_dxy():
+    """Fetch DXY via Yahoo Finance v8 chart API (more reliable than HTML scraping)."""
     result = {}
     try:
-        resp = fetch(
-            'https://www.cnbc.com/quotes/.DXY',
-            impersonate='chrome120',
-            timeout=20,
-        )
-        soup = BeautifulSoup(resp.text, 'lxml')
-        body = soup.find('body')
-        body_txt = body.get_text(' ', strip=True) if body else ''
-
-        m = re.search(r'Last\s*\|.*?(\d{2,3}\.\d{3})\s+([+-]?\d+\.\d+)\s*\(\s*([+-]?\d+\.\d+)%\)', body_txt)
-        if m:
+        url = 'https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=1d'
+        resp = fetch(url, impersonate='chrome120', timeout=20)
+        data = resp.json()
+        meta = data.get('chart', {}).get('result', [{}])[0].get('meta', {})
+        price = meta.get('regularMarketPrice')
+        prev_close = meta.get('chartPreviousClose')
+        if price and prev_close:
+            change = round(price - prev_close, 3)
+            pct = round(((price - prev_close) / prev_close) * 100, 2)
             result['USDIndx'] = {
-                'close': m.group(1),
-                'change': m.group(2),
-                'change_pct': m.group(3) + '%',
-                'source': 'CNBC',
+                'close': str(price),
+                'change': f'{change:+.3f}',
+                'change_pct': f'{pct:+.2f}%',
+                'source': 'Yahoo Finance API',
             }
-        else:
-            nums = re.findall(r'(\d{2,3}\.\d{3})', body_txt)
-            if nums:
-                result['USDIndx'] = {
-                    'close': nums[0],
-                    'change': '',
-                    'change_pct': '',
-                    'source': 'CNBC',
-                }
+        elif price:
+            result['USDIndx'] = {
+                'close': str(price),
+                'change': '',
+                'change_pct': '',
+                'source': 'Yahoo Finance API',
+            }
     except Exception as e:
-        print(f"  WARN DXY: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
+        print(f"  WARN DXY (Yahoo API): {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
     return result
 
 
@@ -731,8 +728,8 @@ def collect_data():
     log("IDX Sector Indices...")
     DATA.update(parse_yahoo_sector_indices())
 
-    log("DXY.. CNBC...")
-    DATA.update(parse_cnbc_dxy())
+    log("DXY.. Yahoo API...")
+    DATA.update(parse_yahoo_dxy())
 
     log("IndoCDS...")
     DATA.update(parse_indonesia_cds())
@@ -1001,9 +998,9 @@ def format_report(data):
         lines.append(f'• EUR/USD: {euro_v}')
     dxy = data.get('USDIndx')
     if isinstance(dxy, dict):
-        dxy_c = dxy.get('close', '')
-        if dxy_c:
-            lines.append(f'• DXY: {dxy_c} (CNBC)')
+        dxy_fmt = fmt(dxy)
+        if dxy_fmt:
+            lines.append(f'• DXY: {dxy_fmt}')
 
     us10 = data.get('US10Yr')
     us2 = data.get('US2Yr')
