@@ -63,8 +63,11 @@ regionaldatacollector/
 ├── SOP.md                        # Standard Operating Procedure
 ├── prompt.txt                    # Prompt template for AI tools
 ├── cache/
-│   ├── regional_raw.json         # Cached raw data (for --from-cache)
-│   └── regional_report.txt       # Last formatted report output
+│   └── regional_raw.json         # Cached raw data (for --from-cache)
+├── output/
+│   ├── regional_report.md        # Last formatted Markdown report
+│   ├── regional_report.pdf       # Clickable PDF export
+│   └── regional_report.png       # Markdown preview image export
 └── venv/                         # Python virtual environment
 ```
 
@@ -96,7 +99,7 @@ This pipeline is designed to work with AI-assisted coding tools for enhanced new
 - **Codex CLI** — `codex -p "$(cat prompt.txt)"`
 - **Continue / Cline** — Point to the repo folder
 
-Without AI tools, running `python regional_market_report.py` directly still produces a complete formatted report — but without LLM-powered news summarization. Result can be seen in folder cache\regional_report.txt
+Without AI tools, running `python regional_market_report.py` directly still produces a complete formatted report — but without LLM-powered news summarization. Result can be seen in `output\regional_report.md`, with exports in `output\regional_report.pdf` and `output\regional_report.png`.
 
 ---
 

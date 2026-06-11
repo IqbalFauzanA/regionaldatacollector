@@ -7,12 +7,12 @@ setiap hari kerja pukul 05:00 WIB dan mengirimkan laporan terformat ke Telegram.
 ## Pipeline
 ```
 regional_pipeline.py (Hermes script, no_agent mode)
-  └─▶ regional_market_report.py  →  cache/regional_report.txt
+  └─▶ regional_market_report.py  →  output/regional_report.md
   └─▶ baca file → stdout (clean report) → Telegram
 ```
 
 Script `regional_pipeline.py` di `~/AppData/Local/hermes/scripts/` jalanin pipeline,
-baca output dari `cache/regional_report.txt`, kirim report bersih (tanpa progress text).
+baca output dari `output/regional_report.md`, kirim report bersih (tanpa progress text).
 
 ## Cara Menjalankan
 ```powershell
@@ -31,7 +31,7 @@ cd C:\Users\satri\code\regionaldatacollector
 ## Cron
 - **Waktu:** Setiap hari kerja pukul **05:30 WIB**
 - **Job name:** Regional Markets Screener + News
-- **Mode:** Agent-based — jalanin pipeline, baca output dari `cache/regional_report.txt`, kirim report bersih
+- **Mode:** Agent-based — jalanin pipeline, baca output dari `output/regional_report.md`, kirim report bersih
 - **Prompt:** Jalankan pipeline, baca file report, kirim mentah-mentah (tanpa tambahan teks)
 - **Workdir:** `C:\Users\satri\code\regionaldatacollector`
 - ⚡ Output diambil dari file, **bukan stdout pipeline langsung** (menghindari progress text)
@@ -50,8 +50,11 @@ regionaldatacollector/
 ├── requirements.txt               # Python dependencies
 ├── SOP.md                         # This file
 ├── cache/
-│   ├── regional_raw.json          # Cached raw data (untuk --from-cache)
-│   └── regional_report.txt        # Cached formatted report
+│   └── regional_raw.json          # Cached raw data (untuk --from-cache)
+├── output/
+│   ├── regional_report.md         # Formatted Markdown report
+│   ├── regional_report.pdf        # Clickable PDF export
+│   └── regional_report.png        # Markdown preview image export
 └── venv/                          # Virtual environment
 ```
 

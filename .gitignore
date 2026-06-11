@@ -1,8 +1,10 @@
 # Virtual environment
 venv/
+.venv/
 
 # Cache files
 cache/
+output/
 
 # OS junk
 .DS_Store
@@ -21,3 +23,8 @@ __pycache__/
 # Temp
 prompt.txt
 image*.png
+
+# PyInstaller
+build/
+dist/
+*.spec

@@ -11,9 +11,16 @@ Usage:
     python regional_market_report.py --json-only  # scrape fresh, dump JSON only
 """
 
-import json, os, sys, re, subprocess
+import html, json, os, sys, re, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from threading import BoundedSemaphore
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8', errors='replace')
 
 try:
     import curl_cffi.requests as req
@@ -23,9 +30,27 @@ except ImportError:
 
 from bs4 import BeautifulSoup
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = ImageDraw = ImageFont = None
+
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
+except ImportError:
+    colors = A4 = ParagraphStyle = getSampleStyleSheet = inch = None
+    pdfmetrics = TTFont = HRFlowable = Paragraph = SimpleDocTemplate = Spacer = None
+
 # ──────────────────────── CONFIG ────────────────────────
 
 TIMEOUT = 30
+MAX_FETCH_WORKERS = 8
 IMPRERSONATE = 'chrome120'
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -34,19 +59,437 @@ HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9,id;q=0.8,zh-CN;q=0.7',
 }
 ZH_HEADERS = {**HEADERS, 'Accept-Language': 'zh-CN,en;q=0.9,id;q=0.8'}
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+HOST_LIMITS = {
+    'www.investing.com': BoundedSemaphore(2),
+    'id.investing.com': BoundedSemaphore(1),
+    'finance.yahoo.com': BoundedSemaphore(3),
+    'query1.finance.yahoo.com': BoundedSemaphore(2),
+    'www.barchart.com': BoundedSemaphore(2),
+}
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CACHE_DIR = os.path.join(BASE_DIR, 'cache')
+OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 CACHE_JSON = os.path.join(CACHE_DIR, 'regional_raw.json')
+REPORT_MD = os.path.join(OUTPUT_DIR, 'regional_report.md')
+REPORT_PDF = os.path.join(OUTPUT_DIR, 'regional_report.pdf')
+REPORT_PNG = os.path.join(OUTPUT_DIR, 'regional_report.png')
 
 # ──────────────────────── HELPERS ────────────────────────
 
 def fetch(url, impersonate=IMPRERSONATE, headers=HEADERS, timeout=TIMEOUT):
-    if req:
-        r = req.get(url, impersonate=impersonate, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        return r
-    else:
-        r = urllib.request.urlopen(url, timeout=timeout)
-        return r
+    host = urlparse(url).netloc.lower()
+    limiter = HOST_LIMITS.get(host)
+    if limiter:
+        with limiter:
+            return fetch_unlimited(url, impersonate=impersonate, headers=headers, timeout=timeout)
+    return fetch_unlimited(url, impersonate=impersonate, headers=headers, timeout=timeout)
+
+
+def fetch_unlimited(url, impersonate=IMPRERSONATE, headers=HEADERS, timeout=TIMEOUT):
+    last_error = None
+    for attempt in range(3):
+        try:
+            if req:
+                r = req.get(url, impersonate=impersonate, headers=headers, timeout=timeout)
+                r.raise_for_status()
+                return r
+            else:
+                r = urllib.request.urlopen(url, timeout=timeout)
+                return r
+        except Exception as e:
+            last_error = e
+            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            retryable = status in (403, 429) or 'HTTP Error 403' in str(e) or 'HTTP Error 429' in str(e)
+            if not retryable or attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    raise last_error
+
+
+def strip_preview_emoji(text):
+    return re.sub(r'[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\U00002600-\U000027BF\uFE0F]', '', text)
+
+
+def clean_preview_text(text):
+    text = text.replace('\u00a0', ' ')
+    text = text.replace('\u2018', "'").replace('\u2019', "'")
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    text = text.replace('**', '').replace('__', '').replace('*', '').replace('_', '')
+    text = strip_preview_emoji(text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def load_export_font(size=20, bold=False):
+    if ImageFont is None:
+        return None
+
+    font_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+    names = ('msyhbd.ttc', 'msyh.ttc', 'segoeuib.ttf', 'arialbd.ttf') if bold else (
+        'msyh.ttc', 'segoeui.ttf', 'arial.ttf'
+    )
+    for name in names:
+        path = os.path.join(font_dir, name)
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size=size)
+    return ImageFont.load_default()
+
+
+def text_width(draw, text, font):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def font_height(draw, font):
+    bbox = draw.textbbox((0, 0), 'Ag', font=font)
+    return bbox[3] - bbox[1]
+
+
+def wrap_text(text, draw, font, max_width):
+    if not text:
+        return []
+
+    wrapped = []
+    current = ''
+    for word in text.split(' '):
+        candidate = word if not current else f'{current} {word}'
+        if text_width(draw, candidate, font) <= max_width:
+            current = candidate
+            continue
+
+        if current:
+            wrapped.append(current)
+            current = word
+
+        while text_width(draw, current, font) > max_width and len(current) > 1:
+            cut = len(current)
+            while cut > 1 and text_width(draw, current[:cut], font) > max_width:
+                cut -= 1
+            wrapped.append(current[:cut])
+            current = current[cut:]
+
+    if current:
+        wrapped.append(current)
+    return wrapped
+
+
+def markdown_preview_items(markdown, draw, fonts, max_width):
+    items = []
+    body_font = fonts['body']
+    link_font = fonts['body']
+    bullet_gap = 26
+
+    for raw_line in markdown.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            items.append({'type': 'space', 'height': 14})
+            continue
+
+        if stripped == '---':
+            items.append({'type': 'rule', 'height': 30})
+            continue
+
+        heading = re.match(r'^(#{1,4})\s+(.+)$', stripped)
+        if heading:
+            level = min(len(heading.group(1)), 3)
+            key = f'h{level}'
+            font = fonts[key]
+            text = clean_preview_text(heading.group(2))
+            lines = wrap_text(text, draw, font, max_width)
+            line_h = font_height(draw, font) + (10 if level == 1 else 8)
+            items.append({
+                'type': 'heading',
+                'font': font,
+                'lines': lines,
+                'height': (len(lines) * line_h) + (20 if level == 1 else 14),
+                'line_height': line_h,
+                'color': (17, 24, 39),
+            })
+            continue
+
+        bullet = re.match(r'^(\s*)-\s+(.+)$', line)
+        if bullet:
+            level = max(0, len(bullet.group(1)) // 2)
+            text = clean_preview_text(bullet.group(2))
+            indent = min(96, level * 34)
+            text_width_limit = max_width - indent - bullet_gap
+            is_link = bool(re.search(r'\[[^\]]+\]\([^)]+\)', bullet.group(2)))
+            lines = wrap_text(text, draw, link_font if is_link else body_font, text_width_limit)
+            line_h = font_height(draw, body_font) + 8
+            items.append({
+                'type': 'bullet',
+                'font': link_font if is_link else body_font,
+                'lines': lines,
+                'height': max(1, len(lines)) * line_h,
+                'line_height': line_h,
+                'indent': indent,
+                'bullet_gap': bullet_gap,
+                'color': (37, 99, 235) if is_link else (31, 41, 55),
+            })
+            continue
+
+        text = clean_preview_text(stripped)
+        lines = wrap_text(text, draw, body_font, max_width)
+        line_h = font_height(draw, body_font) + 8
+        items.append({
+            'type': 'paragraph',
+            'font': body_font,
+            'lines': lines,
+            'height': max(1, len(lines)) * line_h,
+            'line_height': line_h,
+            'color': (31, 41, 55),
+        })
+
+    return items
+
+
+def draw_markdown_items(draw, items, y, margin, max_width):
+    for item in items:
+        if item['type'] == 'space':
+            y += item['height']
+            continue
+
+        if item['type'] == 'rule':
+            line_y = y + (item['height'] // 2)
+            draw.line((margin, line_y, margin + max_width, line_y), fill=(209, 213, 219), width=2)
+            y += item['height']
+            continue
+
+        if item['type'] == 'bullet':
+            bullet_x = margin + item['indent']
+            text_x = bullet_x + item['bullet_gap']
+            first_y = y + 4
+            draw.ellipse((bullet_x + 4, first_y + 7, bullet_x + 12, first_y + 15), fill=(75, 85, 99))
+            for i, line in enumerate(item['lines']):
+                draw.text((text_x, y + (i * item['line_height'])), line, fill=item['color'], font=item['font'])
+            y += item['height']
+            continue
+
+        for i, line in enumerate(item['lines']):
+            draw.text((margin, y + (i * item['line_height'])), line, fill=item['color'], font=item['font'])
+        y += item['height']
+
+    return y
+
+
+def render_markdown_page(items, width, height, margin):
+    image = Image.new('RGB', (width, height), 'white')
+    draw = ImageDraw.Draw(image)
+    draw_markdown_items(draw, items, margin, margin, width - (margin * 2))
+    return image
+
+
+def reportlab_font(name='ReportFont'):
+    if pdfmetrics is None or TTFont is None:
+        return 'Helvetica'
+
+    font_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+    for filename in ('segoeui.ttf', 'arial.ttf'):
+        path = os.path.join(font_dir, filename)
+        if os.path.exists(path):
+            try:
+                if name not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont(name, path))
+                return name
+            except Exception:
+                pass
+    return 'Helvetica'
+
+
+def reportlab_bold_font(name='ReportFontBold'):
+    if pdfmetrics is None or TTFont is None:
+        return 'Helvetica-Bold'
+
+    font_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+    for filename in ('segoeuib.ttf', 'arialbd.ttf'):
+        path = os.path.join(font_dir, filename)
+        if os.path.exists(path):
+            try:
+                if name not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont(name, path))
+                return name
+            except Exception:
+                pass
+    return 'Helvetica-Bold'
+
+
+def markdown_inline_to_reportlab(text):
+    links = []
+
+    def link_repl(match):
+        idx = len(links)
+        links.append((match.group(1), match.group(2)))
+        return f'@@LINK{idx}@@'
+
+    text = strip_preview_emoji(text)
+    text = text.replace('\u2018', "'").replace('\u2019', "'")
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', link_repl, text)
+    escaped = html.escape(text, quote=False)
+
+    def bold_repl(match):
+        return f'<b>{match.group(1)}</b>'
+
+    escaped = re.sub(r'\*\*(.+?)\*\*', bold_repl, escaped)
+    escaped = escaped.replace('_', '')
+
+    for idx, (label, url) in enumerate(links):
+        label_html = html.escape(strip_preview_emoji(label), quote=False)
+        url_html = html.escape(url, quote=True)
+        escaped = escaped.replace(
+            f'@@LINK{idx}@@',
+            f'<link href="{url_html}" color="blue"><u>{label_html}</u></link>',
+        )
+
+    return escaped
+
+
+def save_report_pdf(report):
+    if SimpleDocTemplate is None:
+        print('[PDF export skipped: reportlab is not installed.]', file=sys.stderr, flush=True)
+        return None
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    body_font = reportlab_font()
+    bold_font = reportlab_bold_font()
+    base = getSampleStyleSheet()
+    styles = {
+        'h1': ParagraphStyle(
+            'ReportH1',
+            parent=base['Heading1'],
+            fontName=bold_font,
+            fontSize=22,
+            leading=28,
+            textColor=colors.HexColor('#111827'),
+            spaceAfter=12,
+        ),
+        'h2': ParagraphStyle(
+            'ReportH2',
+            parent=base['Heading2'],
+            fontName=bold_font,
+            fontSize=15,
+            leading=20,
+            textColor=colors.HexColor('#111827'),
+            spaceBefore=8,
+            spaceAfter=6,
+        ),
+        'h3': ParagraphStyle(
+            'ReportH3',
+            parent=base['Heading3'],
+            fontName=bold_font,
+            fontSize=12,
+            leading=16,
+            textColor=colors.HexColor('#111827'),
+            spaceBefore=5,
+            spaceAfter=4,
+        ),
+        'body': ParagraphStyle(
+            'ReportBody',
+            parent=base['BodyText'],
+            fontName=body_font,
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor('#374151'),
+            spaceAfter=2,
+        ),
+        'italic': ParagraphStyle(
+            'ReportItalic',
+            parent=base['BodyText'],
+            fontName=body_font,
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor('#4B5563'),
+            spaceAfter=8,
+        ),
+    }
+
+    story = []
+    bullet_styles = {}
+
+    for raw_line in report.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            story.append(Spacer(1, 4))
+            continue
+
+        if stripped == '---':
+            story.append(HRFlowable(width='100%', thickness=0.75, color=colors.HexColor('#D1D5DB'), spaceBefore=6, spaceAfter=8))
+            continue
+
+        heading = re.match(r'^(#{1,4})\s+(.+)$', stripped)
+        if heading:
+            level = min(len(heading.group(1)), 3)
+            story.append(Paragraph(markdown_inline_to_reportlab(heading.group(2)), styles[f'h{level}']))
+            continue
+
+        bullet = re.match(r'^(\s*)-\s+(.+)$', line)
+        if bullet:
+            level = max(0, len(bullet.group(1)) // 2)
+            if level not in bullet_styles:
+                left_indent = 14 + (level * 16)
+                bullet_styles[level] = ParagraphStyle(
+                    f'ReportBullet{level}',
+                    parent=styles['body'],
+                    leftIndent=left_indent,
+                    firstLineIndent=0,
+                    bulletIndent=level * 16,
+                    spaceAfter=1,
+                )
+            story.append(Paragraph(markdown_inline_to_reportlab(bullet.group(2)), bullet_styles[level], bulletText='\u2022'))
+            continue
+
+        style = styles['italic'] if stripped.startswith('_') and stripped.endswith('_') else styles['body']
+        story.append(Paragraph(markdown_inline_to_reportlab(stripped), style))
+
+    doc = SimpleDocTemplate(
+        REPORT_PDF,
+        pagesize=A4,
+        rightMargin=0.55 * inch,
+        leftMargin=0.55 * inch,
+        topMargin=0.55 * inch,
+        bottomMargin=0.55 * inch,
+        title='Regional Markets Screener',
+    )
+    doc.build(story)
+    return REPORT_PDF
+
+
+def save_report_exports(report):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    exports = []
+
+    pdf_path = save_report_pdf(report)
+    if pdf_path:
+        exports.append(pdf_path)
+
+    if Image is None:
+        print('[PNG export skipped: Pillow is not installed.]', file=sys.stderr, flush=True)
+        return exports
+
+    fonts = {
+        'h1': load_export_font(34, bold=True),
+        'h2': load_export_font(26, bold=True),
+        'h3': load_export_font(22, bold=True),
+        'body': load_export_font(20),
+    }
+    probe = Image.new('RGB', (1, 1), 'white')
+    probe_draw = ImageDraw.Draw(probe)
+
+    png_width = 1400
+    png_margin = 64
+    png_items = markdown_preview_items(report, probe_draw, fonts, png_width - (png_margin * 2))
+    png_height = max(400, (png_margin * 2) + sum(item['height'] for item in png_items))
+    png = render_markdown_page(png_items, png_width, png_height, png_margin)
+    png.save(REPORT_PNG)
+
+    exports.append(REPORT_PNG)
+    return exports
 
 
 def clean_num(s):
@@ -699,26 +1142,16 @@ def collect_data():
     def log(msg):
         print(msg, file=sys.stderr, flush=True)
 
+    def run_task(label, fn):
+        try:
+            return fn()
+        except Exception as e:
+            log(f"  WARN {label}: {type(e).__name__}: {str(e)[:80]}")
+            return {}
+
     log("Regional Screener -- collecting data...")
     t0 = datetime.now()
 
-    log("Major Indices...")
-    DATA.update(parse_table_pages([
-        ('Major Indices', 'https://www.investing.com/indices/major-indices', 1, 2, 5, 6),
-    ]))
-
-    log("IDX Indices...")
-    DATA.update(parse_table_pages([
-        ('IDX Indices', 'https://www.investing.com/indices/indonesia-indices?include-major-indices=true&include-additional-indices=true&include-primary-sectors=true&include-other-indices=true', 1, 2, 5, 6),
-    ]))
-
-    log("Commodities...")
-    DATA.update(parse_commodities_futures())
-
-    log("Coal from Barchart...")
-    DATA.update(parse_barchart_coal())
-
-    log("Single pages...")
     single_pages = [
         ('Iron Ore', 'https://www.investing.com/commodities/iron-ore-62-cfr-futures', 'Iron Ore 62%'),
         ('CPO', 'https://id.investing.com/commodities/malaysian-crude-palm-oil-futures', 'CPO'),
@@ -730,40 +1163,49 @@ def collect_data():
         ('EUR/USD', 'https://www.investing.com/currencies/eur-usd', 'Euro'),
         ('Gold Spot', 'https://www.investing.com/currencies/xau-usd', 'Gold(Spot)'),
     ]
-    for label, url, code in single_pages:
-        log(f"  {label}...")
-        DATA.update(parse_instrument_page(url, label, code))
+    tasks = [
+        ('Major Indices', lambda: parse_table_pages([
+            ('Major Indices', 'https://www.investing.com/indices/major-indices', 1, 2, 5, 6),
+        ])),
+        ('IDX Indices', lambda: parse_table_pages([
+            ('IDX Indices', 'https://www.investing.com/indices/indonesia-indices?include-major-indices=true&include-additional-indices=true&include-primary-sectors=true&include-other-indices=true', 1, 2, 5, 6),
+        ])),
+        ('Commodities', parse_commodities_futures),
+        ('Coal from Barchart', parse_barchart_coal),
+        *[
+            (label, lambda url=url, label=label, code=code: parse_instrument_page(url, label, code))
+            for label, url, code in single_pages
+        ],
+        ('US Bonds', lambda: parse_table_pages([
+            ('US Bonds', 'https://www.investing.com/rates-bonds/usa-government-bonds', 1, 2, -1, -1),
+        ])),
+        ('Indo Bonds', parse_indonesia_bonds),
+        ('ICBI', parse_icbi),
+        *[
+            (code, lambda ticker=ticker, code=code: parse_yahoo_finance(ticker, code))
+            for ticker, code in [('^VIX', 'VIX'), ('EIDO', 'EIDO'), ('EEM', 'EEM'), ('TLK', 'TLKM')]
+        ],
+        ('IDX Sector Indices', parse_yahoo_sector_indices),
+        ('DXY Yahoo API', parse_yahoo_dxy),
+        ('IndoCDS', parse_indonesia_cds),
+        ('Ammonia', parse_ammonia),
+        ('JISDOR', parse_jisdor),
+    ]
 
-    log("US Bonds...")
-    DATA.update(parse_table_pages([
-        ('US Bonds', 'https://www.investing.com/rates-bonds/usa-government-bonds', 1, 2, -1, -1),
-    ]))
+    log(f"Submitting {len(tasks)} scraper tasks with {MAX_FETCH_WORKERS} workers...")
+    results_by_index = {}
+    with ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS) as executor:
+        futures = {
+            executor.submit(run_task, label, fn): (idx, label)
+            for idx, (label, fn) in enumerate(tasks)
+        }
+        for future in as_completed(futures):
+            idx, label = futures[future]
+            results_by_index[idx] = future.result()
+            log(f"  done: {label}")
 
-    log("Indo Bonds...")
-    DATA.update(parse_indonesia_bonds())
-
-    log("ICBI...")
-    DATA.update(parse_icbi())
-
-    log("Yahoo Finance (VIX, ETFs)...")
-    for ticker, code in [('^VIX', 'VIX'), ('EIDO', 'EIDO'), ('EEM', 'EEM'), ('TLK', 'TLKM')]:
-        log(f"  {code}...")
-        DATA.update(parse_yahoo_finance(ticker, code))
-
-    log("IDX Sector Indices...")
-    DATA.update(parse_yahoo_sector_indices())
-
-    log("DXY.. Yahoo API...")
-    DATA.update(parse_yahoo_dxy())
-
-    log("IndoCDS...")
-    DATA.update(parse_indonesia_cds())
-
-    log("Ammonia...")
-    DATA.update(parse_ammonia())
-
-    log("JISDOR...")
-    DATA.update(parse_jisdor())
+    for idx in range(len(tasks)):
+        DATA.update(results_by_index.get(idx, {}))
 
     elapsed = (datetime.now() - t0).total_seconds()
     sources = sorted(set(
@@ -914,47 +1356,47 @@ def format_report(data):
     now = datetime.now()
     hari = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][now.weekday()]
     bulan = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][now.month - 1]
-    lines.append('📊 **Regional Markets Screener**')
-    lines.append(f'🗓️ **{hari}, {now.day} {bulan} {now.year}**')
+    lines.append('# 📊 Regional Markets Screener')
+    lines.append(f'_🗓️ {hari}, {now.day} {bulan} {now.year}_')
     lines.append('')
     lines.append('---')
     lines.append('')
 
     # ── Market News Summary ──
-    lines.append('**📰 Market News Summary**')
+    lines.append('## 📰 Market News Summary')
     lines.append('')
 
     news = fetch_market_news(5)
     if news:
-        lines.append('**Top Market News:**')
+        lines.append('### Top Market News')
         for n in news:
-            lines.append(f'• [{n["title"]}]({n["url"]})')
+            lines.append(f'- [{n["title"]}]({n["url"]})')
         lines.append('')
 
     lines.append('---')
     lines.append('')
 
     # ── US Indices ──
-    lines.append('**🇺🇸 US Indices**')
+    lines.append('## 🇺🇸 US Indices')
     for key, label in [('Dow', 'Dow'), ('S&P 500', 'S&P 500'), ('Nasdaq', 'Nasdaq'),
                        ('Small Cap 2000', 'Small Cap 2000'), ('S&P 500 VIX', 'S&P 500 VIX')]:
         v = kv_full(key)
         if v:
-            lines.append(f'• {label}: {v}')
+            lines.append(f'- **{label}:** {v}')
     lines.append('')
 
     # ── Europe ──
-    lines.append('**🇪🇺 Europe**')
+    lines.append('## 🇪🇺 Europe')
     for key, label in [('DAX', 'DAX'), ('FTSE', 'FTSE'), ('CAC', 'CAC'),
                        ('Euro Stoxx 50', 'Euro Stoxx 50'), ('FTSE MIB', 'FTSE MIB'),
                        ('SMI', 'SMI')]:
         v = kv_full(key)
         if v:
-            lines.append(f'• {label}: {v}')
+            lines.append(f'- **{label}:** {v}')
     lines.append('')
 
     # ── Asia ──
-    lines.append('**🌏 Asia**')
+    lines.append('## 🌏 Asia')
     for key, label in [('Nikkei', 'Nikkei'), ('Shanghai', 'Shanghai'),
                        ('SZSE Component', 'SZSE'), ('HSI', 'HSI'),
                        ('Taiwan Weighted', 'Taiwan'), ('KOSPI', 'KOSPI'),
@@ -962,23 +1404,23 @@ def format_report(data):
                        ('S&P/ASX 200', 'S&P/ASX 200'), ('PSEi Composite', 'PSEi')]:
         v = kv_full(key)
         if v:
-            lines.append(f'• {label}: {v}')
+            lines.append(f'- **{label}:** {v}')
     lines.append('')
 
     # ── Indonesia ──
-    lines.append('**🇮🇩 Indonesia**')
+    lines.append('## 🇮🇩 Indonesia')
     idx_val = kv_full('IDX')
     if idx_val:
-        lines.append(f'• IDX: {idx_val} 🔥')
+        lines.append(f'- **IDX:** {idx_val} 🔥')
     lq_val = kv_full('LQ45')
     if lq_val:
-        lines.append(f'• LQ45: {lq_val}')
+        lines.append(f'- **LQ45:** {lq_val}')
     kom_val = kv_full('IDX Kompas 100')
     if kom_val:
-        lines.append(f'• Kompas 100: {kom_val}')
+        lines.append(f'- **Kompas 100:** {kom_val}')
     jisdor_val = kv_full('Jisdor')
     if jisdor_val:
-        lines.append(f'• Jisdor: {jisdor_val}')
+        lines.append(f'- **Jisdor:** {jisdor_val}')
 
     idx_sectors = [
         ('IDXEnergy', 'Energy'),
@@ -997,27 +1439,26 @@ def format_report(data):
     for k, label in idx_sectors:
         v = kv_full(k)
         if v:
-            lines.append(f'• IDX {label}: {v}')
-    lines.append('')
+            lines.append(f'- **IDX {label}:** {v}')
 
     icbi_val = kv_full('ICBI')
     if icbi_val:
-        lines.append(f'• ICBI: {icbi_val}')
+        lines.append(f'- **ICBI:** {icbi_val}')
     lines.append('')
 
     # ── FX & Bonds ──
-    lines.append('**💵 FX & Bonds**')
+    lines.append('## 💵 FX & Bonds')
     idr_v = kv_full('IDR')
     if idr_v:
-        lines.append(f'• USD/IDR: {idr_v}')
+        lines.append(f'- **USD/IDR:** {idr_v}')
     euro_v = kv_full('Euro')
     if euro_v:
-        lines.append(f'• EUR/USD: {euro_v}')
+        lines.append(f'- **EUR/USD:** {euro_v}')
     dxy = data.get('USDIndx')
     if isinstance(dxy, dict):
         dxy_fmt = fmt(dxy)
         if dxy_fmt:
-            lines.append(f'• DXY: {dxy_fmt}')
+            lines.append(f'- **DXY:** {dxy_fmt}')
 
     us10 = data.get('US10Yr')
     us2 = data.get('US2Yr')
@@ -1026,13 +1467,13 @@ def format_report(data):
     us2_v = close_str(us2) if isinstance(us2, dict) else ''
     us30_v = close_str(us30) if isinstance(us30, dict) else ''
     if us10_v or us2_v or us30_v:
-        lines.append(f'• US10Yr: {us10_v}% | US2Yr: {us2_v}% | US30Yr: {us30_v}%')
+        lines.append(f'- **US Treasuries:** US10Yr {us10_v}% | US2Yr {us2_v}% | US30Yr {us30_v}%')
 
     indo10 = data.get('Indo10Yr')
     if isinstance(indo10, dict):
         indo10_v = indo10.get('close', '')
         if indo10_v:
-            lines.append(f'• Indo10Yr: {indo10_v}%')
+            lines.append(f'- **Indo10Yr:** {indo10_v}%')
 
     icds = data.get('IndoCDS 5yr')
     if isinstance(icds, dict):
@@ -1043,12 +1484,12 @@ def format_report(data):
             cds_str = f'{icds_v}'
             if icds_chg or icds_pct:
                 cds_str += f' ({icds_chg} / {icds_pct})'
-            lines.append(f'• IndoCDS 5yr: {cds_str}')
+            lines.append(f'- **IndoCDS 5yr:** {cds_str}')
 
     lines.append('')
 
     # ── Energy ──
-    lines.append('**🛢️ Energy**')
+    lines.append('## 🛢️ Energy')
     for key, label, prefix in [('Oil(WT)', 'Oil WTI', '$'), ('Oil(Brn)', 'Oil Brent', '$'),
                                 ('Ntrl Gas', 'Nat Gas', '$')]:
         d = data.get(key)
@@ -1056,38 +1497,38 @@ def format_report(data):
             c = d.get('close', '')
             p = get_change(d)
             if c:
-                lines.append(f'• {label}: {prefix}{c} ({p})' if p else f'• {label}: {prefix}{c}')
+                lines.append(f'- **{label}:** {prefix}{c} ({p})' if p else f'- **{label}:** {prefix}{c}')
 
     lines.append('')
 
     # ── Coal (Barchart) ──
-    lines.append('• **Coal (Barchart)** 🔄')
+    lines.append('### Coal (Barchart) 🔄')
     coal_nwl = data.get('Coal(Nwl)')
     coal_rot = data.get('Coal(Rot)')
 
     if isinstance(coal_nwl, dict) and coal_nwl.get('contracts'):
-        lines.append('• Newcastle:')
+        lines.append('- **Newcastle:**')
         for c in coal_nwl['contracts']:
-            lines.append(f'  • {c["month"]}: {c["price"]} ({c["change"]} / {c["change_pct"]})')
+            lines.append(f'  - **{c["month"]}:** {c["price"]} ({c["change"]} / {c["change_pct"]})')
 
     if isinstance(coal_rot, dict) and coal_rot.get('contracts'):
-        lines.append('• Rotterdam:')
+        lines.append('- **Rotterdam:**')
         for c in coal_rot['contracts']:
-            lines.append(f'  • {c["month"]}: {c["price"]} ({c["change"]} / {c["change_pct"]})')
+            lines.append(f'  - **{c["month"]}:** {c["price"]} ({c["change"]} / {c["change_pct"]})')
     lines.append('')
 
     # ── Metals & Mining ──
-    lines.append('**🏗️ Metals & Mining**')
+    lines.append('## 🏗️ Metals & Mining')
     for key, label in [('Gold(Spot)', 'Gold'), ('Silver', 'Silver'), ('Copper', 'Copper'),
                        ('Nickel', 'Nickel'), ('Timah', 'Timah'), ('Aluminium', 'Aluminium'),
                        ('Iron Ore 62%', 'Iron Ore 62%'), ('BCOMIN', 'BCOMIN')]:
         v = kv_full(key)
         if v:
-            lines.append(f'• {label}: {v}')
+            lines.append(f'- **{label}:** {v}')
     lines.append('')
 
     # ── Komoditas Lain ──
-    lines.append('**🌿 Komoditas Lain**')
+    lines.append('## 🌿 Komoditas Lain')
     for key, label in [('CPO', 'CPO'), ('Woodpulp', 'Woodpulp'),
                        ('Ammonia', 'Ammonia'), ('Corn', 'Corn'),
                        ('Wheat', 'Wheat'), ('SoybeanOil', 'Soybean Oil')]:
@@ -1097,15 +1538,15 @@ def format_report(data):
                 d = data.get(key, {})
                 note = d.get('note', '') if isinstance(d, dict) else ''
                 note_str = f' ({note})' if note else ''
-                lines.append(f'• {label}: {v}{note_str}')
+                lines.append(f'- **{label}:** {v}{note_str}')
         else:
             v = kv_full(key)
             if v:
-                lines.append(f'• {label}: {v}')
+                lines.append(f'- **{label}:** {v}')
     lines.append('')
 
     # ── ETFs & Stocks ──
-    lines.append('**📈 ETFs & Stocks**')
+    lines.append('## 📈 ETFs & Stocks')
     for key, label in [('EIDO', 'EIDO'), ('TLKM', 'TLKM'), ('EEM', 'EEM')]:
         d = data.get(key)
         if isinstance(d, dict):
@@ -1114,18 +1555,19 @@ def format_report(data):
             if c:
                 sp = get_point_change(d)
                 if p:
-                    lines.append(f'• {label}: {c} ({(sp + " / ") if sp else ""}{p})')
+                    lines.append(f'- **{label}:** {c} ({(sp + " / ") if sp else ""}{p})')
                 else:
-                    lines.append(f'• {label}: {c}')
+                    lines.append(f'- **{label}:** {c}')
     lines.append('')
 
     # ── Footer ──
     lines.append('---')
     lines.append('')
-    lines.append('Broker Code: AT')
-    lines.append('Desy Erawati/ DE')
-    lines.append('Source: Bloomberg, Investing, IBPA, CNBC, Bursa Malaysia')
-    lines.append('Copy;right: Phintraco Sekuritas')
+    lines.append('## Footer')
+    lines.append('- **Broker Code:** AT')
+    lines.append('- **Prepared by:** Desy Erawati / DE')
+    lines.append('- **Sources:** Bloomberg, Investing, IBPA, CNBC, Bursa Malaysia')
+    lines.append('- **Copyright:** Phintraco Sekuritas')
 
     return '\n'.join(lines)
 
@@ -1164,11 +1606,14 @@ def main():
     report = format_report(data)
     print(report, flush=True)
 
-    # Save report to cache text file
-    report_path = os.path.join(CACHE_DIR, 'regional_report.txt')
-    with open(report_path, 'w', encoding='utf-8') as f:
+    # Save report to output files
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(REPORT_MD, 'w', encoding='utf-8') as f:
         f.write(report)
-    print(f'\n\n[Report saved to {report_path}]', file=sys.stderr, flush=True)
+    print(f'\n\n[Report saved to {REPORT_MD}]', file=sys.stderr, flush=True)
+
+    for export_path in save_report_exports(report):
+        print(f'[Report saved to {export_path}]', file=sys.stderr, flush=True)
 
 
 if __name__ == '__main__':
