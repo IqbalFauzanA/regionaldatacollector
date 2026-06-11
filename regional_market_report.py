@@ -1252,12 +1252,12 @@ def format_report(data):
     if isinstance(coal_nwl, dict) and coal_nwl.get('contracts'):
         lines.append('• Newcastle:')
         for c in coal_nwl['contracts']:
-            lines.append(f'  • {c["month"]}: {c["price"]} ({c["change"]} / {c["change_pct"]})')
+            lines.append(f'  • {c["month"]}: {c["price"]} {c["change"]} {c["change_pct"]}')
 
     if isinstance(coal_rot, dict) and coal_rot.get('contracts'):
         lines.append('• Rotterdam:')
         for c in coal_rot['contracts']:
-            lines.append(f'  • {c["month"]}: {c["price"]} ({c["change"]} / {c["change_pct"]})')
+            lines.append(f'  • {c["month"]}: {c["price"]} {c["change"]} {c["change_pct"]}')
     lines.append('')
 
     # ── Metals & Mining ──
