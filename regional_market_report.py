@@ -27,6 +27,8 @@ from bs4 import BeautifulSoup
 
 TIMEOUT = 30
 IMPRERSONATE = 'chrome120'
+# Fallback browser fingerprints for 403 retry — curl_cffi supports many profiles
+RETRY_IMPRERSONATE = ['chrome120', 'chrome110', 'chrome107', 'safari15_5', 'safari17_0', 'edge99']
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -41,9 +43,23 @@ CACHE_JSON = os.path.join(CACHE_DIR, 'regional_raw.json')
 
 def fetch(url, impersonate=IMPRERSONATE, headers=HEADERS, timeout=TIMEOUT):
     if req:
-        r = req.get(url, impersonate=impersonate, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        return r
+        profiles = [impersonate] + [p for p in RETRY_IMPRERSONATE if p != impersonate]
+        last_err = None
+        for i, profile in enumerate(profiles):
+            try:
+                r = req.get(url, impersonate=profile, headers=headers, timeout=timeout)
+                r.raise_for_status()
+                return r
+            except Exception as e:
+                last_err = e
+                status = getattr(e, 'response', None)
+                status_code = getattr(status, 'status_code', None) if status else None
+                if status_code == 403 and i < len(profiles) - 1:
+                    print(f"  [retry] 403 on {profile}, trying {profiles[i+1]}",
+                          file=sys.stderr)
+                    continue
+                raise
+        raise last_err
     else:
         r = urllib.request.urlopen(url, timeout=timeout)
         return r
