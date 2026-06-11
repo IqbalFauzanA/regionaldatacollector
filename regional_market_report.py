@@ -1298,7 +1298,7 @@ def format_report(data):
             if c:
                 sp = get_point_change(d)
                 if p:
-                    lines.append(f'• {label}: {c} ({(sp + " / ") if sp else ""}{p})')
+                    lines.append(f'• {label}: {c} {sp} {p}' if sp else f'• {label}: {c} {p}')
                 else:
                     lines.append(f'• {label}: {c}')
     lines.append('')
