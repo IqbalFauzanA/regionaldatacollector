@@ -1226,7 +1226,7 @@ def format_report(data):
         if icds_v:
             cds_str = f'{icds_v}'
             if icds_chg or icds_pct:
-                cds_str += f' ({icds_chg} / {icds_pct})'
+                cds_str += f' {icds_chg} {icds_pct}'
             lines.append(f'• IndoCDS 5yr: {cds_str}')
 
     lines.append('')
