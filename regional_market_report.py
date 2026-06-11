@@ -1240,7 +1240,7 @@ def format_report(data):
             c = d.get('close', '')
             p = get_change(d)
             if c:
-                lines.append(f'• {label}: {prefix}{c} ({p})' if p else f'• {label}: {prefix}{c}')
+                lines.append(f'• {label}: {prefix}{c} {p}' if p else f'• {label}: {prefix}{c}')
 
     lines.append('')
 
