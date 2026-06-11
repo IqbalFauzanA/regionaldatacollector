@@ -588,6 +588,82 @@ def parse_table_pages(pages):
     return results
 
 
+def parse_phei():
+    """ICBI + Indo10Yr from PHEI (Penilai Harga Efek Indonesia)."""
+    result = {}
+    try:
+        resp = fetch(
+            'https://www.phei.co.id/en-us/Data/Fair-Prices-and-Yield',
+            impersonate='chrome120',
+            timeout=30,
+        )
+        bs = BeautifulSoup(resp.text, 'lxml')
+
+        # ── ICBI from the header card ──
+        icbi_el = bs.find(string='ICBI')
+        if icbi_el:
+            container = icbi_el.find_parent(class_='col-md-12')
+            if not container:
+                container = icbi_el.find_parent('div', class_=True)
+                while container and 'col-md-12' not in container.get('class', []):
+                    container = container.parent
+                    if not container or container.name == 'html':
+                        container = None
+                        break
+            if container:
+                text = container.get_text('|', strip=True)
+                parts = text.split('|')
+                # Expected: ICBI|▲|426.4080|Previous|425.7156|Change|0.6925|Change (%)|0.16
+                if len(parts) >= 9:
+                    close = parts[2]
+                    prev = parts[4]
+                    chg = parts[6]
+                    pct = parts[8]
+                    result['ICBI'] = {
+                        'close': close,
+                        'change': chg,
+                        'change_pct': f'{pct}%',
+                        'source': 'PHEI',
+                    }
+
+        # ── Indo10Yr from IGSYC table ──
+        tables = bs.find_all('table')
+        for table in tables:
+            rows = table.find_all('tr')
+            if not rows:
+                continue
+            header = rows[0].find_all(['th', 'td'])
+            header_texts = [c.get_text(strip=True) for c in header]
+            if 'Tenor' not in ' '.join(header_texts):
+                continue
+            for row in rows[1:]:
+                cells = row.find_all('td')
+                if len(cells) < 3:
+                    continue
+                tenor = cells[0].get_text(strip=True)
+                if tenor == '10.0':
+                    today = cells[1].get_text(strip=True)
+                    yesterday = cells[2].get_text(strip=True)
+                    try:
+                        t = float(today)
+                        y = float(yesterday)
+                        chg = round(t - y, 4)
+                        pct = round((chg / y) * 100, 2) if y else 0.0
+                        result['Indo10Yr'] = {
+                            'close': f'{t:.4f}',
+                            'change': f'{chg:+.4f}',
+                            'change_pct': f'{pct:+.2f}%',
+                            'source': 'PHEI',
+                        }
+                    except (ValueError, TypeError):
+                        pass
+                    break
+            break  # only first tenor table
+    except Exception as e:
+        print(f'  WARN PHEI: {type(e).__name__}: {str(e)[:60]}', file=sys.stderr)
+    return result
+
+
 def parse_commodities_futures():
     results = {}
     wanted = {
@@ -679,28 +755,6 @@ def parse_instrument_page(url, label, code_name):
     except Exception as e:
         print(f"  WARN {label}: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
     return {code_name: result} if result else {}
-
-
-def parse_icbi():
-    result = {}
-    try:
-        resp = fetch('https://www.idx.co.id/en/market-data/bonds-sukuk/indobex')
-        match = re.search(
-            r'IndexCode:\"ICBI[^\"]*?\"[^}]*?IndexValue:([^,]+)[^}]*?IndexChgVal:([^,]+)[^}]*?IndexChgPct:([^,}]+)',
-            resp.text
-        )
-        if match:
-            result = {
-                'ICBI': {
-                    'close': str(match.group(1)).strip(),
-                    'change': str(match.group(2)).strip(),
-                    'change_pct': str(match.group(3)).strip(),
-                    'source': 'IDX',
-                }
-            }
-    except Exception as e:
-        print(f"  WARN ICBI: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
-    return result
 
 
 # ──────────────── YAHOO FINANCE ────────────────
@@ -1133,6 +1187,51 @@ def parse_barchart_coal():
     return result
 
 
+def parse_bursa_cpo():
+    """FCPO from Bursa Malaysia derivatives market table, row 3."""
+    result = {}
+    try:
+        resp = fetch(
+            'https://www.bursamalaysia.com/trade/market/derivatives_market',
+            impersonate='chrome120',
+            timeout=30,
+        )
+        bs = BeautifulSoup(resp.text, 'lxml')
+        tables = bs.find_all('table')
+        for table in tables:
+            rows = table.find_all('tr')
+            if len(rows) < 4:
+                continue
+            # Find the FCPO table: first header cell should say "Futures/Months"
+            header_cells = rows[0].find_all(['th', 'td'])
+            if not header_cells or 'Futures' not in header_cells[0].get_text(strip=True):
+                continue
+            # Row index 2 = 3rd row (0-based), the row the user wants
+            row = rows[2]
+            cells = row.find_all(['td', 'th'])
+            if len(cells) < 4:
+                continue
+            last_raw = cells[1].get_text(strip=True).replace(',', '')
+            chg_raw = cells[2].get_text(strip=True).replace(',', '')
+            try:
+                close = float(last_raw)
+                change = float(chg_raw)
+                prev_close = close - change
+                pct = round((change / prev_close) * 100, 2) if prev_close else 0.0
+                result['CPO'] = {
+                    'close': f'{close:.2f}',
+                    'change': f'{change:+.2f}',
+                    'change_pct': f'{pct:+.2f}%',
+                    'source': 'Bursa Malaysia',
+                }
+            except (ValueError, TypeError):
+                pass
+            break
+    except Exception as e:
+        print(f'  WARN Bursa CPO: {type(e).__name__}: {str(e)[:60]}', file=sys.stderr)
+    return result
+
+
 # ──────────────────── DATA COLLECTION ────────────────────
 
 def collect_data():
@@ -1154,7 +1253,6 @@ def collect_data():
 
     single_pages = [
         ('Iron Ore', 'https://www.investing.com/commodities/iron-ore-62-cfr-futures', 'Iron Ore 62%'),
-        ('CPO', 'https://id.investing.com/commodities/malaysian-crude-palm-oil-futures', 'CPO'),
         ('Woodpulp', 'https://id.investing.com/commodities/shfe-bleached-softwood-kraft-pulp-futures', 'Woodpulp'),
         ('Tin', 'https://www.investing.com/commodities/tin', 'Timah'),
         ('BCOMIN', 'https://www.investing.com/indices/bloomberg-industrial-metals', 'BCOMIN'),
@@ -1398,10 +1496,8 @@ def format_report(data):
     # ── Asia ──
     lines.append('## 🌏 Asia')
     for key, label in [('Nikkei', 'Nikkei'), ('Shanghai', 'Shanghai'),
-                       ('SZSE Component', 'SZSE'), ('HSI', 'HSI'),
-                       ('Taiwan Weighted', 'Taiwan'), ('KOSPI', 'KOSPI'),
-                       ('Nifty 50', 'Nifty 50'), ('SET', 'SET'),
-                       ('S&P/ASX 200', 'S&P/ASX 200'), ('PSEi Composite', 'PSEi')]:
+                       ('HSI', 'HSI'), ('KOSPI', 'KOSPI'),
+                       ('STI', 'STI')]:
         v = kv_full(key)
         if v:
             lines.append(f'- **{label}:** {v}')
