@@ -1031,11 +1031,11 @@ def fmt(d):
         if pct_clean and not pct_clean.endswith('%'):
             pct_clean += '%'
         if chg and chg not in ('', 'None'):
-            return f'{close} ({chg} / {pct_clean})'
+            return f'{close} {chg} {pct_clean}'
         else:
-            return f'{close} ({pct_clean})'
+            return f'{close} {pct_clean}'
     if chg and chg not in ('', 'None'):
-        return f'{close} ({chg})'
+        return f'{close} {chg}'
     return close
 
 
@@ -1075,13 +1075,13 @@ def fmt_with_pct(d):
     pct = get_change(d)
     point = get_point_change(d)
     if point and pct and not point.startswith('-19'):
-        return f'{close} ({point} / {pct})'
+        return f'{close} {point} {pct}'
     if pct:
         if pct.startswith('+'):
             pct = pct[1:]
-        return f'{close} ({pct})'
+        return f'{close} {pct}'
     if point and not point.startswith('-19'):
-        return f'{close} ({point})'
+        return f'{close} {point}'
     return close
 
 
