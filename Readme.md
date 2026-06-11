@@ -78,7 +78,7 @@ regionaldatacollector/
 | Section | Contents |
 |---------|----------|
 | **📰 Market News Summary** | Dow, S&P 500, Nasdaq closes + 5 live news headlines |
-| **🇺🇸 US Indices** | Dow, S&P 500, Nasdaq, Small Cap 2000, VIX |
+| **🇺🇸 US Indices** | Dow, S&P 500, Nasdaq, VIX |
 | **🇪🇺 Europe** | DAX, FTSE, CAC, Euro Stoxx 50, FTSE MIB, SMI |
 | **🌏 Asia** | Nikkei, Shanghai, SZSE, HSI, Taiwan, KOSPI, Nifty 50, SET, ASX 200, PSEi |
 | **🇮🇩 Indonesia** | IDX, LQ45, Kompas 100, Jisdor, 12 sector indices, ICBI |

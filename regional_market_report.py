@@ -524,7 +524,7 @@ def save_report_pdf(report):
         leftMargin=0.55 * inch,
         topMargin=0.55 * inch,
         bottomMargin=0.55 * inch,
-        title="Regional Markets Screener",
+        title="Good Morning",
     )
     doc.build(story)
     return REPORT_PDF
@@ -613,7 +613,6 @@ def code_from_name(name):
         "u.s. 30y": "US30Yr",
         "indo 10y": "Indo10Yr",
         "indonesia 10y": "Indo10Yr",
-        "small cap 2000": "Small Cap 2000",
         "s&p 500 vix": "S&P 500 VIX",
         "nifty 50": "Nifty 50",
         "s&p/asx 200": "S&P/ASX 200",
@@ -641,31 +640,37 @@ def parse_table_pages(pages):
             tables = bs.find_all("table")
             if not tables:
                 continue
-            table = tables[0]
-            rows = table.find_all("tr")
-            for row in rows[1:]:
-                cells = row.find_all("td")
-                if len(cells) <= max(name_col, last_col, chg_col, chg_pct_col):
+            # Some pages contain multiple tables; search all of them to avoid
+            # missing rows (e.g. IDX30 appearing in a later table).
+            for table in tables:
+                rows = table.find_all("tr")
+                if not rows:
                     continue
-                name = cells[name_col].get_text(" ", strip=True)
-                name_clean = re.sub(r"\s*derived$", "", name).strip()
-                code = code_from_name(name_clean)
-                last_txt = cells[last_col].get_text(strip=True)
-                chg_txt = (
-                    cells[chg_col].get_text(strip=True) if chg_col < len(cells) else ""
-                )
-                pct_txt = (
-                    cells[chg_pct_col].get_text(strip=True)
-                    if chg_pct_col < len(cells)
-                    else ""
-                )
-                if last_txt and code:
-                    results[code] = {
-                        "close": clean_num(last_txt),
-                        "change": clean_num(chg_txt),
-                        "change_pct": pct_txt,
-                        "source": label,
-                    }
+                for row in rows[1:]:
+                    cells = row.find_all("td")
+                    if len(cells) <= max(name_col, last_col, chg_col, chg_pct_col):
+                        continue
+                    name = cells[name_col].get_text(" ", strip=True)
+                    name_clean = re.sub(r"\s*derived$", "", name).strip()
+                    code = code_from_name(name_clean)
+                    last_txt = cells[last_col].get_text(strip=True)
+                    chg_txt = (
+                        cells[chg_col].get_text(strip=True)
+                        if chg_col < len(cells)
+                        else ""
+                    )
+                    pct_txt = (
+                        cells[chg_pct_col].get_text(strip=True)
+                        if chg_pct_col < len(cells)
+                        else ""
+                    )
+                    if last_txt and code:
+                        results[code] = {
+                            "close": clean_num(last_txt),
+                            "change": clean_num(chg_txt),
+                            "change_pct": pct_txt,
+                            "source": label,
+                        }
         except Exception as e:
             print(f"  WARN {label}: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
     return results
@@ -769,23 +774,90 @@ def parse_commodities_futures():
         tables = bs.find_all("table")
         if not tables:
             return results
-        table = tables[0]
-        rows = table.find_all("tr")
-        for row in rows[1:]:
-            cells = row.find_all("td")
-            if len(cells) < 7:
+
+        for table in tables:
+            rows = table.find_all("tr")
+            if not rows:
                 continue
-            name = cells[1].get_text(" ", strip=True)
-            name_clean = re.sub(r"\s*derived$", "", name).strip()
-            if name_clean in wanted:
+
+            # Inspect header row to detect column indices
+            header_cells = rows[0].find_all(["th", "td"]) if rows else []
+            header_texts = [c.get_text(" ", strip=True).lower() for c in header_cells]
+
+            def find_header_index(keywords):
+                for i, h in enumerate(header_texts):
+                    for kw in keywords:
+                        if kw in h:
+                            return i
+                return None
+
+            name_idx = find_header_index(
+                ["name", "contract", "commodity", "instrument", "symbol"]
+            ) or (1 if len(header_cells) > 1 else 0)
+            last_idx = (
+                find_header_index(["last", "price", "close"])
+                or find_header_index(["ltd"])
+                or 3
+            )
+            chg_idx = find_header_index(["change", "chg"]) or None
+            pct_idx = find_header_index(["%", "change (%)", "chg%", "change%", "ch%"])
+
+            for row in rows[1:]:
+                cells = row.find_all("td")
+                if not cells or name_idx >= len(cells):
+                    continue
+                name = cells[name_idx].get_text(" ", strip=True)
+                name_clean = re.sub(r"\s*derived$", "", name).strip()
+                if name_clean not in wanted:
+                    continue
+
+                last_txt = ""
+                chg_txt = ""
+                pct_txt = ""
+
+                # last
+                if isinstance(last_idx, int) and last_idx < len(cells):
+                    last_txt = cells[last_idx].get_text(strip=True)
+                else:
+                    for c in cells[name_idx + 1 :]:
+                        t = c.get_text(strip=True)
+                        if re.match(r"^[+-]?\d[\d,\.]*$", t):
+                            last_txt = t
+                            break
+
+                # change
+                if chg_idx is not None and chg_idx < len(cells):
+                    chg_txt = cells[chg_idx].get_text(strip=True)
+                else:
+                    # find the first numeric after last_txt that's not the same
+                    for c in cells[name_idx + 1 :]:
+                        t = c.get_text(strip=True)
+                        if not t:
+                            continue
+                        if t == last_txt:
+                            continue
+                        if re.match(r"^[+-]?\d[\d,\.]*$", t):
+                            chg_txt = t
+                            break
+
+                # percent
+                if pct_idx is not None and pct_idx < len(cells):
+                    pct_txt = cells[pct_idx].get_text(strip=True)
+                else:
+                    for c in reversed(cells):
+                        t = c.get_text(strip=True)
+                        if "%" in t:
+                            pct_txt = t
+                            break
+
+                if not last_txt:
+                    continue
+
                 code = wanted[name_clean]
-                last = cells[3].get_text(strip=True)
-                chg = cells[6].get_text(strip=True) if len(cells) > 6 else ""
-                pct = cells[7].get_text(strip=True) if len(cells) > 7 else ""
                 results[code] = {
-                    "close": clean_num(last),
-                    "change": clean_num(chg),
-                    "change_pct": pct,
+                    "close": clean_num(last_txt),
+                    "change": clean_num(chg_txt) if chg_txt else None,
+                    "change_pct": pct_txt,
                     "source": "Investing Futures",
                 }
     except Exception as e:
@@ -1411,6 +1483,8 @@ def collect_data():
             "Woodpulp",
         ),
         ("Tin", "https://www.investing.com/commodities/tin", "Timah"),
+        ("Silver", "https://www.investing.com/commodities/silver", "Silver"),
+        ("Copper", "https://www.investing.com/commodities/copper", "Copper"),
         (
             "BCOMIN",
             "https://www.investing.com/indices/bloomberg-industrial-metals",
@@ -1487,6 +1561,8 @@ def collect_data():
                 ("EIDO", "EIDO"),
                 ("EEM", "EEM"),
                 ("TLK", "TLKM"),
+                ("SI%3DF", "Silver"),
+                ("HG%3DF", "Copper"),
             ]
         ],
         ("IDX Sector Indices", parse_yahoo_sector_indices),
@@ -1572,21 +1648,15 @@ def fmt(d):
     if not isinstance(d, dict):
         return str(d)
     close = d.get("close", "")
-    chg = d.get("change")
-    pct = d.get("change_pct")
+    chg = get_point_change(d)
+    pct = get_change(d)
     if pct:
-        pct_clean = pct
-        if pct_clean.startswith("+"):
-            pct_clean = pct_clean[1:]
-        # Add % if missing (Investing API returns bare numbers)
-        if pct_clean and not pct_clean.endswith("%"):
-            pct_clean += "%"
-        if chg and chg not in ("", "None"):
-            return f"{close} ({chg} / {pct_clean})"
+        if chg:
+            return f"{close} {chg} {pct}"
         else:
-            return f"{close} ({pct_clean})"
-    if chg and chg not in ("", "None"):
-        return f"{close} ({chg})"
+            return f"{close} {pct}"
+    if chg:
+        return f"{close} {chg}"
     return close
 
 
@@ -1596,17 +1666,21 @@ def get_change(d):
     pct = d.get("change_pct", "")
     if pct and pct not in ("", "0", "0%"):
         try:
-            pct_num = abs(float(pct.replace("%", "").replace("+", "").replace(",", "")))
+            pct_num = abs(
+                float(str(pct).replace("%", "").replace("+", "").replace(",", ""))
+            )
             if pct_num > 50:
                 return ""
         except (ValueError, ZeroDivisionError):
             pass
+        s = str(pct).strip()
         # Add % if missing (Investing API returns bare numbers)
-        if not pct.endswith("%"):
-            pct += "%"
-        if pct.startswith("+"):
-            return pct[1:]
-        return pct
+        if not s.endswith("%"):
+            s += "%"
+        # Ensure sign is present for positives
+        if not s.startswith(("+", "-")):
+            s = "+" + s
+        return s
     return ""
 
 
@@ -1615,7 +1689,10 @@ def get_point_change(d):
         return ""
     chg = d.get("change", "")
     if chg and chg not in ("", "0", "None"):
-        return chg
+        s = str(chg).strip()
+        if not s.startswith(("+", "-")):
+            s = "+" + s
+        return s
     return ""
 
 
@@ -1626,13 +1703,11 @@ def fmt_with_pct(d):
     pct = get_change(d)
     point = get_point_change(d)
     if point and pct and not point.startswith("-19"):
-        return f"{close} ({point} / {pct})"
+        return f"{close} {point} {pct}"
     if pct:
-        if pct.startswith("+"):
-            pct = pct[1:]
-        return f"{close} ({pct})"
+        return f"{close} {pct}"
     if point and not point.startswith("-19"):
-        return f"{close} ({point})"
+        return f"{close} {point}"
     return close
 
 
@@ -1706,10 +1781,9 @@ def format_report(data):
         ("Dow", "Dow"),
         ("S&P 500", "S&P 500"),
         ("Nasdaq", "Nasdaq"),
-        ("Small Cap 2000", "Small Cap 2000"),
         ("S&P 500 VIX", "S&P 500 VIX"),
     ]:
-        v = kv_full(key)
+        v = kv(key)
         if v:
             lines.append(f"- **{label}:** {v}")
     lines.append("")
@@ -1720,11 +1794,8 @@ def format_report(data):
         ("DAX", "DAX"),
         ("FTSE", "FTSE"),
         ("CAC", "CAC"),
-        ("Euro Stoxx 50", "Euro Stoxx 50"),
-        ("FTSE MIB", "FTSE MIB"),
-        ("SMI", "SMI"),
     ]:
-        v = kv_full(key)
+        v = kv(key)
         if v:
             lines.append(f"- **{label}:** {v}")
     lines.append("")
@@ -1734,33 +1805,30 @@ def format_report(data):
     for key, label in [
         ("Nikkei", "Nikkei"),
         ("Shanghai", "Shanghai"),
-        ("SZSE Component", "SZSE"),
         ("HSI", "HSI"),
-        ("Taiwan Weighted", "Taiwan"),
         ("KOSPI", "KOSPI"),
-        ("Nifty 50", "Nifty 50"),
-        ("SET", "SET"),
-        ("S&P/ASX 200", "S&P/ASX 200"),
-        ("PSEi Composite", "PSEi"),
         ("STI", "STI"),
     ]:
-        v = kv_full(key)
+        v = kv(key)
         if v:
             lines.append(f"- **{label}:** {v}")
     lines.append("")
 
     # ── Indonesia ──
     lines.append("## 🇮🇩 Indonesia")
-    idx_val = kv_full("IDX")
+    idx_val = kv("IDX")
     if idx_val:
         lines.append(f"- **IDX:** {idx_val} 🔥")
-    lq_val = kv_full("LQ45")
+    lq_val = kv("LQ45")
     if lq_val:
         lines.append(f"- **LQ45:** {lq_val}")
-    kom_val = kv_full("IDX Kompas 100")
+    kom_val = kv("IDX Kompas 100")
     if kom_val:
         lines.append(f"- **Kompas 100:** {kom_val}")
-    jisdor_val = kv_full("Jisdor")
+    idx30_val = kv("IDX30")
+    if idx30_val:
+        lines.append(f"- **IDX30:** {idx30_val}")
+    jisdor_val = kv("Jisdor")
     if jisdor_val:
         lines.append(f"- **Jisdor:** {jisdor_val}")
 
@@ -1779,13 +1847,10 @@ def format_report(data):
         ("IDXHlthcare", "Healthcare"),
     ]
     for k, label in idx_sectors:
-        v = kv_full(k)
+        v = kv(k)
         if v:
             lines.append(f"- **IDX {label}:** {v}")
 
-    icbi_val = kv_full("ICBI")
-    if icbi_val:
-        lines.append(f"- **ICBI:** {icbi_val}")
     lines.append("")
 
     # ── FX & Bonds ──
@@ -1819,15 +1884,33 @@ def format_report(data):
         if indo10_v:
             lines.append(f"- **Indo10Yr:** {indo10_v}%")
 
+    # ICBI should be shown under FX & Bonds below Indo10Yr
+    icbi_val = kv_full("ICBI")
+    if icbi_val:
+        lines.append(f"- **ICBI:** {icbi_val}")
+
     icds = data.get("IndoCDS 5yr")
     if isinstance(icds, dict):
         icds_v = icds.get("close", "")
         icds_chg = icds.get("change", "")
         icds_pct = icds.get("change_pct", "")
         if icds_v:
+            parts = []
+            if icds_chg and icds_chg not in ("", "None"):
+                ch = str(icds_chg).strip()
+                if not ch.startswith(("+", "-")):
+                    ch = "+" + ch
+                parts.append(ch)
+            if icds_pct and icds_pct not in ("", "None"):
+                pc = str(icds_pct).strip()
+                if not pc.endswith("%"):
+                    pc += "%"
+                if not pc.startswith(("+", "-")):
+                    pc = "+" + pc
+                parts.append(pc)
             cds_str = f"{icds_v}"
-            if icds_chg or icds_pct:
-                cds_str += f" ({icds_chg} / {icds_pct})"
+            if parts:
+                cds_str = cds_str + " " + " ".join(parts)
             lines.append(f"- **IndoCDS 5yr:** {cds_str}")
 
     lines.append("")
@@ -1844,11 +1927,10 @@ def format_report(data):
             c = d.get("close", "")
             p = get_change(d)
             if c:
-                lines.append(
-                    f"- **{label}:** {prefix}{c} ({p})"
-                    if p
-                    else f"- **{label}:** {prefix}{c}"
-                )
+                if p:
+                    lines.append(f"- **{label}:** {prefix}{c} {p}")
+                else:
+                    lines.append(f"- **{label}:** {prefix}{c}")
 
     lines.append("")
 
@@ -1860,16 +1942,48 @@ def format_report(data):
     if isinstance(coal_nwl, dict) and coal_nwl.get("contracts"):
         lines.append("- **Newcastle:**")
         for c in coal_nwl["contracts"]:
-            lines.append(
-                f'  - **{c["month"]}:** {c["price"]} ({c["change"]} / {c["change_pct"]})'
-            )
+            ch = c.get("change", "")
+            pc = c.get("change_pct", "")
+            parts = []
+            if ch and ch not in ("", "None"):
+                chs = str(ch).strip()
+                if not chs.startswith(("+", "-")):
+                    chs = "+" + chs
+                parts.append(chs)
+            if pc and pc not in ("", "None"):
+                pcs = str(pc).strip()
+                if not pcs.endswith("%"):
+                    pcs += "%"
+                if not pcs.startswith(("+", "-")):
+                    pcs = "+" + pcs
+                parts.append(pcs)
+            if parts:
+                lines.append(f'  - **{c["month"]}:** {c["price"]} ' + " ".join(parts))
+            else:
+                lines.append(f'  - **{c["month"]}:** {c["price"]}')
 
     if isinstance(coal_rot, dict) and coal_rot.get("contracts"):
         lines.append("- **Rotterdam:**")
         for c in coal_rot["contracts"]:
-            lines.append(
-                f'  - **{c["month"]}:** {c["price"]} ({c["change"]} / {c["change_pct"]})'
-            )
+            ch = c.get("change", "")
+            pc = c.get("change_pct", "")
+            parts = []
+            if ch and ch not in ("", "None"):
+                chs = str(ch).strip()
+                if not chs.startswith(("+", "-")):
+                    chs = "+" + chs
+                parts.append(chs)
+            if pc and pc not in ("", "None"):
+                pcs = str(pc).strip()
+                if not pcs.endswith("%"):
+                    pcs += "%"
+                if not pcs.startswith(("+", "-")):
+                    pcs = "+" + pcs
+                parts.append(pcs)
+            if parts:
+                lines.append(f'  - **{c["month"]}:** {c["price"]} ' + " ".join(parts))
+            else:
+                lines.append(f'  - **{c["month"]}:** {c["price"]}')
     lines.append("")
 
     # ── Metals & Mining ──
@@ -1884,7 +1998,7 @@ def format_report(data):
         ("Iron Ore 62%", "Iron Ore 62%"),
         ("BCOMIN", "BCOMIN"),
     ]:
-        v = kv_full(key)
+        v = kv(key)
         if v:
             lines.append(f"- **{label}:** {v}")
     lines.append("")
@@ -1900,14 +2014,14 @@ def format_report(data):
         ("SoybeanOil", "Soybean Oil"),
     ]:
         if key == "Ammonia":
-            v = kv_full(key)
+            v = kv(key)
             if v:
                 d = data.get(key, {})
                 note = d.get("note", "") if isinstance(d, dict) else ""
                 note_str = f" ({note})" if note else ""
                 lines.append(f"- **{label}:** {v}{note_str}")
         else:
-            v = kv_full(key)
+            v = kv(key)
             if v:
                 lines.append(f"- **{label}:** {v}")
     lines.append("")
@@ -1921,10 +2035,12 @@ def format_report(data):
             p = get_change(d)
             if c:
                 sp = get_point_change(d)
-                if p:
-                    lines.append(
-                        f'- **{label}:** {c} ({(sp + " / ") if sp else ""}{p})'
-                    )
+                if p and sp:
+                    lines.append(f"- **{label}:** {c} {sp} {p}")
+                elif p:
+                    lines.append(f"- **{label}:** {c} {p}")
+                elif sp:
+                    lines.append(f"- **{label}:** {c} {sp}")
                 else:
                     lines.append(f"- **{label}:** {c}")
     lines.append("")
@@ -1955,6 +2071,7 @@ def format_report_whatsapp(report_md):
     - Horizontal rules '---' -> blank line
     """
     out_lines = []
+    in_top_market_news = False
 
     for raw in report_md.splitlines():
         line = raw.rstrip()
@@ -1972,6 +2089,12 @@ def format_report_whatsapp(report_md):
         if m:
             content = m.group(1).strip()
             content = re.sub(r"\*\*(.+?)\*\*", r"*\1*", content)
+            # reset or enable Top Market News mode
+            if "top market news" in content.lower():
+                in_top_market_news = True
+            else:
+                in_top_market_news = False
+            # keep links in headings as 'label — url'
             content = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 — \2", content)
             out_lines.append(f"*{content}*")
             continue
@@ -1982,13 +2105,20 @@ def format_report_whatsapp(report_md):
             indent = b.group(1)
             content = b.group(2)
             content = re.sub(r"\*\*(.+?)\*\*", r"*\1*", content)
-            content = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 — \2", content)
+            # In Top Market News, omit URLs and keep only the headline text
+            if in_top_market_news:
+                content = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", content)
+            else:
+                content = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 — \2", content)
             out_lines.append(f"{indent}• {content}")
             continue
 
         # Inline bold and links elsewhere
         line = re.sub(r"\*\*(.+?)\*\*", r"*\1*", line)
-        line = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 — \2", line)
+        if in_top_market_news:
+            line = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", line)
+        else:
+            line = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 — \2", line)
         out_lines.append(line)
 
     return "\n".join(out_lines)

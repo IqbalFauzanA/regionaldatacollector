@@ -64,7 +64,7 @@ Sisa file lama (regional_screener.py, format_regional_report.py) sudah dihapus.
 1. Header: 📊 Regional Markets Screener + tanggal
 2. **📰 Market News Summary** — US indices (Dow, S&P 500, Nasdaq) + Top 5 news live dari Google News RSS
 3. VIX, WTI, Brent, big movers (KOSPI >5%, Nikkei >2%)
-4. 🇺🇸 **US Indices** — Dow, S&P 500, Nasdaq, Small Cap 2000, VIX
+4. 🇺🇸 **US Indices** — Dow, S&P 500, Nasdaq, VIX
 5. 🇪🇺 **Europe** — DAX, FTSE, CAC, Euro Stoxx 50, FTSE MIB, SMI
 6. 🌏 **Asia** — Nikkei, Shanghai, SZSE, HSI, Taiwan, KOSPI, Nifty 50, SET, ASX 200, PSEi
 7. 🇮🇩 **Indonesia** — IDX 🔥, LQ45, Kompas 100, Jisdor, 12 sektor IDX vertikal, ICBI
