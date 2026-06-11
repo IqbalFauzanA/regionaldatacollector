@@ -704,6 +704,39 @@ def parse_yahoo_dxy():
     return result
 
 
+# ──────────────── IDX Property from Yahoo Finance API ────────────────
+
+def parse_yahoo_idx_property():
+    """Fetch IDX Property (IDXPROPERT.JK) via Yahoo Finance v8 chart API."""
+    result = {}
+    try:
+        url = 'https://query1.finance.yahoo.com/v8/finance/chart/IDXPROPERT.JK?interval=1d&range=5d'
+        resp = fetch(url, impersonate='chrome120', timeout=20)
+        data = resp.json()
+        meta = data.get('chart', {}).get('result', [{}])[0].get('meta', {})
+        price = meta.get('regularMarketPrice')
+        prev_close = meta.get('chartPreviousClose')
+        if price and prev_close:
+            change = round(price - prev_close, 2)
+            pct = round(((price - prev_close) / prev_close) * 100, 2)
+            result['IDX Property'] = {
+                'close': str(price),
+                'change': f'{change:+.2f}',
+                'change_pct': f'{pct:+.2f}%',
+                'source': 'Yahoo Finance API',
+            }
+        elif price:
+            result['IDX Property'] = {
+                'close': str(price),
+                'change': '',
+                'change_pct': '',
+                'source': 'Yahoo Finance API',
+            }
+    except Exception as e:
+        print(f"  WARN IDX Property (Yahoo API): {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
+    return result
+
+
 # ──────────────── BAR CHART COAL ────────────────
 
 def parse_barchart_coal():
@@ -868,6 +901,8 @@ def collect_data():
     DATA.update(parse_table_pages([
         ('IDX Indices', 'https://www.investing.com/indices/indonesia-indices?include-major-indices=true&include-additional-indices=true&include-primary-sectors=true&include-other-indices=true', 1, 2, 5, 6),
     ]))
+    # IDX Property (IDXPROPERT.JK) — gak ada di tabel Primary Sectors, ambil dari Yahoo Finance API
+    DATA.update(parse_yahoo_idx_property())
 
     log("Commodities...")
     DATA.update(parse_commodities_futures())
