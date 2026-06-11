@@ -805,6 +805,48 @@ def parse_bursa_cpo():
     return result
 
 
+# ──────────────── SUNSIRS WOOD PULP ────────────────
+
+def parse_sunsirs_woodpulp():
+    """Wood pulp spot price from SunSirs Daily table (Building materials sector)."""
+    result = {}
+    try:
+        resp = fetch('https://www.sunsirs.com/uk/sectors-17.html')
+        bs = BeautifulSoup(resp.text, 'lxml')
+        tables = bs.find_all('table')
+        if not tables:
+            return result
+        # First table = Spot Price: Daily
+        table = tables[0]
+        rows = table.find_all('tr')
+        for row in rows[1:]:  # skip header
+            cells = row.find_all('td')
+            if len(cells) < 5:
+                continue
+            name = cells[0].get_text(strip=True)
+            if 'Wood pulp' in name:
+                prev_raw = cells[2].get_text(strip=True).replace(',', '')
+                close_raw = cells[3].get_text(strip=True).replace(',', '')
+                pct_raw = cells[4].get_text(strip=True).replace('%', '').replace(',', '')
+                try:
+                    close = float(close_raw)
+                    prev = float(prev_raw)
+                    change = close - prev
+                    pct = float(pct_raw)
+                    result['Woodpulp'] = {
+                        'close': f'{close:.2f}',
+                        'change': f'{change:+.2f}',
+                        'change_pct': f'{pct:+.2f}%',
+                        'source': 'SunSirs',
+                    }
+                except (ValueError, TypeError):
+                    pass
+                break
+    except Exception as e:
+        print(f'  WARN SunSirs Woodpulp: {type(e).__name__}: {str(e)[:60]}', file=sys.stderr)
+    return result
+
+
 # ──────────────────── DATA COLLECTION ────────────────────
 
 def collect_data():
@@ -839,7 +881,6 @@ def collect_data():
     log("Single pages...")
     single_pages = [
         ('Iron Ore', 'https://www.investing.com/commodities/iron-ore-62-cfr-futures', 'Iron Ore 62%'),
-        ('Woodpulp', 'https://id.investing.com/commodities/shfe-bleached-softwood-kraft-pulp-futures', 'Woodpulp'),
         ('Tin', 'https://www.investing.com/commodities/tin', 'Timah'),
         ('BCOMIN', 'https://www.investing.com/indices/bloomberg-industrial-metals', 'BCOMIN'),
         ('COMIN', 'https://www.investing.com/indices/commodity-index', 'Como Indx'),
@@ -850,6 +891,9 @@ def collect_data():
     for label, url, code in single_pages:
         log(f"  {label}...")
         DATA.update(parse_instrument_page(url, label, code))
+
+    log("SunSirs Woodpulp...")
+    DATA.update(parse_sunsirs_woodpulp())
 
     log("US Bonds...")
     DATA.update(parse_table_pages([
