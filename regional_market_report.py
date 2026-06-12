@@ -6,9 +6,14 @@ Scrapes ~118 market data points, formats into SOP layout, prints to screen.
 No subprocess, no encoding war, no pipe fragility.
 
 Usage:
-    python regional_market_report.py              # scrape fresh + format + save cache
-    python regional_market_report.py --from-cache # use cached JSON (instant)
-    python regional_market_report.py --json-only  # scrape fresh, dump JSON only
+    python regional_market_report.py                 # scrape fresh + format + save cache
+    python regional_market_report.py --from-cache    # use cached JSON (instant)
+    python regional_market_report.py --json-only     # scrape fresh, dump JSON only
+    python regional_market_report.py --partial-cache # only overwrite cache keys with valid new data
+
+Notes:
+    - When bundled as an EXE, the program defaults to partial-cache mode
+      so clicking the EXE will enable partial cache without adding CLI args.
 """
 
 import html, json, os, sys, re, time
@@ -1711,6 +1716,76 @@ def fmt_with_pct(d):
     return close
 
 
+def is_valid_data(d):
+    """Return True if a parsed data item looks usable (has a close or change)."""
+    if not isinstance(d, dict):
+        return False
+    close = d.get("close")
+    if close and str(close).strip() not in ("", "None"):
+        return True
+    if d.get("change") and str(d.get("change")).strip() not in ("", "None"):
+        return True
+    if d.get("change_pct") and str(d.get("change_pct")).strip() not in (
+        "",
+        "None",
+        "0",
+        "0%",
+    ):
+        return True
+    return False
+
+
+def format_percent_value(d, prefix="", suffix="%"):
+    """Format numeric close values that are percentages (e.g. yields).
+
+    Returns a string like: '4.529% +0.01 +0.22%'
+    """
+    if not isinstance(d, dict):
+        return ""
+    close = close_str(d)
+    if not close:
+        return ""
+    # append percent sign if close looks numeric and doesn't already have '%'
+    cp = str(close).strip()
+    try:
+        float(cp)
+        if not cp.endswith(str(suffix)):
+            cp = f"{cp}{suffix}"
+    except Exception:
+        pass
+
+    parts = [f"{prefix}{cp}"]
+    point = get_point_change(d)
+    pct = get_change(d)
+    if point:
+        parts.append(point)
+    if pct:
+        parts.append(pct)
+    return " ".join(parts)
+
+
+def format_currency_value(d, prefix="$"):
+    """Format currency-like values with close, point change and percent.
+
+    Example: '$90.16 +0.14 +0.16%'
+    """
+    if not isinstance(d, dict):
+        return ""
+    close = close_str(d)
+    if not close:
+        return ""
+    cp = str(close).strip()
+    # keep as-is; don't force decimal formatting
+    parts = [f"{prefix}{cp}"]
+    point = get_point_change(d)
+    pct = get_change(d)
+    if point:
+        parts.append(point)
+    if pct:
+        parts.append(pct)
+    return " ".join(parts)
+
+
 # ──────────────────── REPORT FORMATTER ────────────────────
 
 
@@ -1861,28 +1936,32 @@ def format_report(data):
     euro_v = kv_full("Euro")
     if euro_v:
         lines.append(f"- **EUR/USD:** {euro_v}")
+
+    # DXY (USD Index)
     dxy = data.get("USDIndx")
-    if isinstance(dxy, dict):
+    if isinstance(dxy, dict) and is_valid_data(dxy):
         dxy_fmt = fmt(dxy)
         if dxy_fmt:
             lines.append(f"- **DXY:** {dxy_fmt}")
 
+    # US Treasuries (show unified percent formatting)
     us10 = data.get("US10Yr")
     us2 = data.get("US2Yr")
     us30 = data.get("US30Yr")
-    us10_v = close_str(us10) if isinstance(us10, dict) else ""
-    us2_v = close_str(us2) if isinstance(us2, dict) else ""
-    us30_v = close_str(us30) if isinstance(us30, dict) else ""
-    if us10_v or us2_v or us30_v:
-        lines.append(
-            f"- **US Treasuries:** US10Yr {us10_v}% | US2Yr {us2_v}% | US30Yr {us30_v}%"
-        )
+    treas_parts = []
+    if isinstance(us10, dict) and is_valid_data(us10):
+        treas_parts.append(f"US10Yr {format_percent_value(us10)}")
+    if isinstance(us2, dict) and is_valid_data(us2):
+        treas_parts.append(f"US2Yr {format_percent_value(us2)}")
+    if isinstance(us30, dict) and is_valid_data(us30):
+        treas_parts.append(f"US30Yr {format_percent_value(us30)}")
+    if treas_parts:
+        lines.append(f"- **US Treasuries:** {' | '.join(treas_parts)}")
 
+    # Indo 10Y (format as percent)
     indo10 = data.get("Indo10Yr")
-    if isinstance(indo10, dict):
-        indo10_v = indo10.get("close", "")
-        if indo10_v:
-            lines.append(f"- **Indo10Yr:** {indo10_v}%")
+    if isinstance(indo10, dict) and is_valid_data(indo10):
+        lines.append(f"- **Indo10Yr:** {format_percent_value(indo10)}")
 
     # ICBI should be shown under FX & Bonds below Indo10Yr
     icbi_val = kv_full("ICBI")
@@ -1890,7 +1969,7 @@ def format_report(data):
         lines.append(f"- **ICBI:** {icbi_val}")
 
     icds = data.get("IndoCDS 5yr")
-    if isinstance(icds, dict):
+    if isinstance(icds, dict) and is_valid_data(icds):
         icds_v = icds.get("close", "")
         icds_chg = icds.get("change", "")
         icds_pct = icds.get("change_pct", "")
@@ -1923,14 +2002,8 @@ def format_report(data):
         ("Ntrl Gas", "Nat Gas", "$"),
     ]:
         d = data.get(key)
-        if isinstance(d, dict):
-            c = d.get("close", "")
-            p = get_change(d)
-            if c:
-                if p:
-                    lines.append(f"- **{label}:** {prefix}{c} {p}")
-                else:
-                    lines.append(f"- **{label}:** {prefix}{c}")
+        if isinstance(d, dict) and is_valid_data(d):
+            lines.append(f"- **{label}:** {format_currency_value(d, prefix)}")
 
     lines.append("")
 
@@ -2127,26 +2200,65 @@ def format_report_whatsapp(report_md):
 def main():
     json_only = "--json-only" in sys.argv
     from_cache = "--from-cache" in sys.argv
+    partial_cache_mode = "--partial-cache" in sys.argv
 
-    if from_cache and os.path.exists(CACHE_JSON):
+    # If running as frozen exe and no explicit flag provided, default to partial-cache
+    if getattr(sys, "frozen", False) and "--partial-cache" not in sys.argv:
+        partial_cache_mode = True
+
+    # Load cache if requested or if partial-cache available
+    cache_exists = os.path.exists(CACHE_JSON)
+    cache_raw = None
+    if cache_exists:
+        try:
+            with open(CACHE_JSON, "r", encoding="utf-8") as f:
+                cache_raw = json.load(f)
+        except Exception:
+            cache_raw = None
+
+    if from_cache and cache_raw:
         print("[Loading from cached screener data...]", file=sys.stderr, flush=True)
-        with open(CACHE_JSON, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        data = raw.get("data", {})
-        sources = raw.get("sources_used", [])
-        ts = raw.get("timestamp", "")
+        data = cache_raw.get("data", {})
+        sources = cache_raw.get("sources_used", [])
+        ts = cache_raw.get("timestamp", "")
     else:
+        # Collect fresh data
         data, sources, ts = collect_data()
 
-        # Save raw JSON to cache
+        # Save raw JSON to cache (normal or partial merge)
         os.makedirs(CACHE_DIR, exist_ok=True)
         raw_out = {
             "timestamp": ts,
             "data": data,
             "sources_used": sources,
         }
-        with open(CACHE_JSON, "w", encoding="utf-8") as f:
-            json.dump(raw_out, f, indent=2, ensure_ascii=False)
+        try:
+            if (
+                partial_cache_mode
+                and cache_raw
+                and isinstance(cache_raw.get("data"), dict)
+            ):
+                # Merge: only overwrite keys that have valid new data; keep old otherwise
+                merged = dict(cache_raw.get("data", {}))
+                for k, v in data.items():
+                    if is_valid_data(v):
+                        merged[k] = v
+                    else:
+                        # keep existing if present
+                        if k not in merged:
+                            merged[k] = v
+                raw_out["data"] = merged
+                raw_out["sources_used"] = sorted(
+                    set(sources) | set(cache_raw.get("sources_used", []))
+                )
+            # write out cache
+            with open(CACHE_JSON, "w", encoding="utf-8") as f:
+                json.dump(raw_out, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(
+                f"[WARN] failed to write cache: {type(e).__name__}: {str(e)[:80]}",
+                file=sys.stderr,
+            )
 
     if json_only:
         print(
