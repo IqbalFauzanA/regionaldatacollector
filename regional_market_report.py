@@ -63,7 +63,33 @@ HOST_LIMITS = {
 }
 
 # base paths
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# When running as a frozen executable (PyInstaller / similar), place cache
+# and output beside the executable so users double-clicking the EXE find the
+# generated files in the same folder. Otherwise use the script's directory.
+if getattr(sys, "frozen", False):
+    # When bundled by PyInstaller --onefile the runtime extracts to a temp
+    # folder; `sys.executable` will point into that temp location. Users
+    # expect outputs (cache/output) next to the EXE in the dist folder, so
+    # prefer the current working directory when the executable appears to be
+    # running from a temp extraction directory.
+    import tempfile
+
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    cwd = os.getcwd()
+    tempdir = tempfile.gettempdir()
+    try:
+        # If the extracted exe lives under the temp dir, prefer cwd
+        if os.path.commonpath([exe_dir, tempdir]) == tempdir or exe_dir.startswith(
+            tempdir
+        ):
+            BASE_DIR = cwd
+        else:
+            BASE_DIR = exe_dir
+    except Exception:
+        BASE_DIR = cwd
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 
@@ -2156,8 +2182,28 @@ def main():
         except Exception:
             cache_raw = None
 
-    if from_cache and cache_raw:
-        print("[Loading from cached screener data...]", file=sys.stderr, flush=True)
+    # Decide whether to use cache-only (skip fetch) when in partial-cache mode
+    use_cache_only = False
+    if cache_raw and partial_cache_mode:
+        try:
+            cached_ts = cache_raw.get("timestamp")
+            if cached_ts:
+                then = datetime.fromisoformat(cached_ts)
+                age_seconds = (datetime.now() - then).total_seconds()
+                if age_seconds <= 3600:
+                    use_cache_only = True
+        except Exception:
+            use_cache_only = False
+
+    if (from_cache or use_cache_only) and cache_raw:
+        if use_cache_only and not from_cache:
+            print(
+                "[Using recent cache (<=1h); skipping network fetch)]",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print("[Loading from cached screener data...]", file=sys.stderr, flush=True)
         data = cache_raw.get("data", {})
         sources = cache_raw.get("sources_used", [])
         ts = cache_raw.get("timestamp", "")
