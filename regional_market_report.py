@@ -28,7 +28,7 @@ import curl_cffi.requests as req
 
 from bs4 import BeautifulSoup
 
-from PIL import Image, ImageDraw, ImageFont
+# PNG/MD export disabled — Pillow imports removed
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -38,354 +38,202 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
 
-# ──────────────────────── CONFIG ────────────────────────
-
-TIMEOUT = 30
+# ──────────────────── Configuration / Globals ────────────────────
+# runtime knobs
 MAX_FETCH_WORKERS = 8
 IMPRERSONATE = "chrome120"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,id;q=0.8,zh-CN;q=0.7",
-}
-ZH_HEADERS = {**HEADERS, "Accept-Language": "zh-CN,en;q=0.9,id;q=0.8"}
-HOST_LIMITS = {
-    "www.investing.com": BoundedSemaphore(2),
-    "id.investing.com": BoundedSemaphore(1),
-    "finance.yahoo.com": BoundedSemaphore(3),
-    "query1.finance.yahoo.com": BoundedSemaphore(2),
-    "www.barchart.com": BoundedSemaphore(2),
-}
-if getattr(sys, "frozen", False):
-    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RETRY_IMPRERSONATE = ["chrome120", "chrome119", "firefox120"]
 
+# HTTP headers
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+ZH_HEADERS = {
+    "User-Agent": HEADERS["User-Agent"],
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
+# Per-host concurrency limits (sane defaults; parsers can still work)
+HOST_LIMITS = {
+    "www.investing.com": 3,
+    "query1.finance.yahoo.com": 4,
+    "finance.yahoo.com": 4,
+    "www.barchart.com": 2,
+}
+
+# base paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+
+# cache file
 CACHE_JSON = os.path.join(CACHE_DIR, "regional_raw.json")
-REPORT_MD = os.path.join(OUTPUT_DIR, "regional_report.md")
+
+# report outputs
 REPORT_PDF = os.path.join(OUTPUT_DIR, "regional_report.pdf")
-REPORT_PNG = os.path.join(OUTPUT_DIR, "regional_report.png")
 REPORT_WA = os.path.join(OUTPUT_DIR, "regional_report_whatsapp.txt")
 
-# ──────────────────────── HELPERS ────────────────────────
+# internal semaphores cache
+_HOST_SEMAPHORES = {}
 
 
-def fetch(url, impersonate=IMPRERSONATE, headers=HEADERS, timeout=TIMEOUT):
+def _get_host_semaphore(url: str):
     host = urlparse(url).netloc.lower()
-    limiter = HOST_LIMITS.get(host)
-    if limiter:
-        with limiter:
-            return fetch_unlimited(
-                url, impersonate=impersonate, headers=headers, timeout=timeout
-            )
-    return fetch_unlimited(
-        url, impersonate=impersonate, headers=headers, timeout=timeout
-    )
+    limit = HOST_LIMITS.get(host, 3)
+    sem = _HOST_SEMAPHORES.get(host)
+    if sem is None:
+        sem = BoundedSemaphore(limit)
+        _HOST_SEMAPHORES[host] = sem
+    return sem
 
 
-def fetch_unlimited(url, impersonate=IMPRERSONATE, headers=HEADERS, timeout=TIMEOUT):
-    last_error: Exception | None = None
-    for attempt in range(3):
+def fetch(
+    url: str,
+    impersonate: str | None = None,
+    timeout: int = 15,
+    headers: dict | None = None,
+    max_retries: int = 3,
+):
+    """Fetch URL with per-host semaphore, impersonation and simple retries.
+
+    Returns the `curl_cffi.requests.Response` or raises the last exception.
+    """
+    sem = _get_host_semaphore(url)
+    last_exc = None
+    for attempt in range(max_retries):
+        sem.acquire()
         try:
-            r = req.get(
-                url,
-                impersonate=cast(Any, impersonate),
-                headers=headers,
-                timeout=timeout,
-            )
-            r.raise_for_status()
-            return r
-        except Exception as e:
-            last_error = e
-            status = getattr(getattr(e, "response", None), "status_code", None)
-            retryable = (
-                status in (403, 429)
-                or "HTTP Error 403" in str(e)
-                or "HTTP Error 429" in str(e)
-            )
-            if not retryable or attempt == 2:
-                raise
-            time.sleep(1.5 * (attempt + 1))
-    if last_error is not None:
-        raise last_error
+            try:
+                resp = req.get(
+                    url,
+                    impersonate=cast(Any, impersonate or IMPRERSONATE),
+                    timeout=timeout,
+                    headers=headers,
+                )
+                # treat 200 as success; for 403/429 try again with backoff
+                if getattr(resp, "status_code", None) == 200:
+                    return resp
+                if getattr(resp, "status_code", None) in (403, 429):
+                    last_exc = Exception(f"HTTP {resp.status_code}")
+                    time.sleep(1 + attempt)
+                    continue
+                return resp
+            except Exception as e:
+                last_exc = e
+                time.sleep(0.5 * (attempt + 1))
+                continue
+        finally:
+            try:
+                sem.release()
+            except Exception:
+                pass
+
+    if last_exc:
+        raise last_exc
     raise RuntimeError("fetch failed")
 
 
-def strip_preview_emoji(text):
-    return re.sub(
-        r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\U00002600-\U000027BF\uFE0F]",
-        "",
-        text,
-    )
+def strip_preview_emoji(s: str) -> str:
+    """Remove common emoji and preview markers from a string for PDF/HTML output.
 
-
-def clean_preview_text(text):
-    text = text.replace("\u00a0", " ")
-    text = text.replace("\u2018", "'").replace("\u2019", "'")
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-    text = text.replace("**", "").replace("__", "").replace("*", "").replace("_", "")
-    text = strip_preview_emoji(text)
-    return re.sub(r"\s+", " ", text).strip()
+    This is intentionally conservative — it removes obvious emoji codepoints and
+    falls back to stripping non-ASCII characters if the regex engine can't handle
+    high Unicode ranges on this Python build.
+    """
+    if not isinstance(s, str):
+        return s
+    try:
+        # Also strip regional indicator symbols (U+1F1E6-U+1F1FF) which form
+        # flag emoji like 🇺🇸 — ReportLab fonts cannot render these and they
+        # appear as small square boxes in PDFs. Keep the regex conservative.
+        return re.sub(
+            r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E6-\U0001F1FF\u2600-\u27BF\U0001F900-\U0001F9FF]",
+            "",
+            s,
+        )
+    except re.error:
+        # Fallback for narrow builds — strip non-ASCII
+        return re.sub(r"[^\x00-\x7F]", "", s)
 
 
 def has_css_class(element, cls: str) -> bool:
-    """Return True if a BeautifulSoup element has the given CSS class."""
-    if not element:
+    """Return True if BeautifulSoup element has the given CSS class."""
+    try:
+        classes = element.get("class", [])
+        if isinstance(classes, str):
+            classes = classes.split()
+        return cls in (classes or [])
+    except Exception:
         return False
-    classes = element.get("class")
-    if not classes:
-        return False
-    if isinstance(classes, (list, tuple)):
-        return cls in classes
-    if isinstance(classes, str):
-        return cls in classes.split()
-    return False
 
 
-def load_export_font(size=20, bold=False):
-    if ImageFont is None:
-        return None
-
-    font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-    names = (
-        ("msyhbd.ttc", "msyh.ttc", "segoeuib.ttf", "arialbd.ttf")
-        if bold
-        else ("msyh.ttc", "segoeui.ttf", "arial.ttf")
-    )
-    for name in names:
-        path = os.path.join(font_dir, name)
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size=size)
-    return ImageFont.load_default()
+# PNG preview helpers removed — PNG export disabled per user request
 
 
-def text_width(draw, text, font):
-    bbox = draw.textbbox((0, 0), text, font=font)
-    return bbox[2] - bbox[0]
+def reportlab_font() -> str:
+    """Return the registered base font name used for body text in PDFs.
 
-
-def font_height(draw, font):
-    bbox = draw.textbbox((0, 0), "Ag", font=font)
-    return bbox[3] - bbox[1]
-
-
-def wrap_text(text, draw, font, max_width):
-    if not text:
-        return []
-
-    wrapped = []
-    current = ""
-    for word in text.split(" "):
-        candidate = word if not current else f"{current} {word}"
-        if text_width(draw, candidate, font) <= max_width:
-            current = candidate
-            continue
-
-        if current:
-            wrapped.append(current)
-            current = word
-
-        while text_width(draw, current, font) > max_width and len(current) > 1:
-            cut = len(current)
-            while cut > 1 and text_width(draw, current[:cut], font) > max_width:
-                cut -= 1
-            wrapped.append(current[:cut])
-            current = current[cut:]
-
-    if current:
-        wrapped.append(current)
-    return wrapped
-
-
-def markdown_preview_items(markdown, draw, fonts, max_width):
-    items = []
-    body_font = fonts["body"]
-    link_font = fonts["body"]
-    bullet_gap = 26
-
-    for raw_line in markdown.splitlines():
-        line = raw_line.rstrip()
-        stripped = line.strip()
-
-        if not stripped:
-            items.append({"type": "space", "height": 14})
-            continue
-
-        if stripped == "---":
-            items.append({"type": "rule", "height": 30})
-            continue
-
-        heading = re.match(r"^(#{1,4})\s+(.+)$", stripped)
-        if heading:
-            level = min(len(heading.group(1)), 3)
-            key = f"h{level}"
-            font = fonts[key]
-            text = clean_preview_text(heading.group(2))
-            lines = wrap_text(text, draw, font, max_width)
-            line_h = font_height(draw, font) + (10 if level == 1 else 8)
-            items.append(
-                {
-                    "type": "heading",
-                    "font": font,
-                    "lines": lines,
-                    "height": (len(lines) * line_h) + (20 if level == 1 else 14),
-                    "line_height": line_h,
-                    "color": (17, 24, 39),
-                }
-            )
-            continue
-
-        bullet = re.match(r"^(\s*)-\s+(.+)$", line)
-        if bullet:
-            level = max(0, len(bullet.group(1)) // 2)
-            text = clean_preview_text(bullet.group(2))
-            indent = min(96, level * 34)
-            text_width_limit = max_width - indent - bullet_gap
-            is_link = bool(re.search(r"\[[^\]]+\]\([^)]+\)", bullet.group(2)))
-            lines = wrap_text(
-                text, draw, link_font if is_link else body_font, text_width_limit
-            )
-            line_h = font_height(draw, body_font) + 8
-            items.append(
-                {
-                    "type": "bullet",
-                    "font": link_font if is_link else body_font,
-                    "lines": lines,
-                    "height": max(1, len(lines)) * line_h,
-                    "line_height": line_h,
-                    "indent": indent,
-                    "bullet_gap": bullet_gap,
-                    "color": (37, 99, 235) if is_link else (31, 41, 55),
-                }
-            )
-            continue
-
-        text = clean_preview_text(stripped)
-        lines = wrap_text(text, draw, body_font, max_width)
-        line_h = font_height(draw, body_font) + 8
-        items.append(
-            {
-                "type": "paragraph",
-                "font": body_font,
-                "lines": lines,
-                "height": max(1, len(lines)) * line_h,
-                "line_height": line_h,
-                "color": (31, 41, 55),
-            }
-        )
-
-    return items
-
-
-def draw_markdown_items(draw, items, y, margin, max_width):
-    for item in items:
-        if item["type"] == "space":
-            y += item["height"]
-            continue
-
-        if item["type"] == "rule":
-            line_y = y + (item["height"] // 2)
-            draw.line(
-                (margin, line_y, margin + max_width, line_y),
-                fill=(209, 213, 219),
-                width=2,
-            )
-            y += item["height"]
-            continue
-
-        if item["type"] == "bullet":
-            bullet_x = margin + item["indent"]
-            text_x = bullet_x + item["bullet_gap"]
-            first_y = y + 4
-            draw.ellipse(
-                (bullet_x + 4, first_y + 7, bullet_x + 12, first_y + 15),
-                fill=(75, 85, 99),
-            )
-            for i, line in enumerate(item["lines"]):
-                draw.text(
-                    (text_x, y + (i * item["line_height"])),
-                    line,
-                    fill=item["color"],
-                    font=item["font"],
-                )
-            y += item["height"]
-            continue
-
-        for i, line in enumerate(item["lines"]):
-            draw.text(
-                (margin, y + (i * item["line_height"])),
-                line,
-                fill=item["color"],
-                font=item["font"],
-            )
-        y += item["height"]
-
-    return y
-
-
-def render_markdown_page(items, width, height, margin):
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
-    draw_markdown_items(draw, items, margin, margin, width - (margin * 2))
-    return image
-
-
-def reportlab_font(name="ReportFont"):
-    if pdfmetrics is None or TTFont is None:
-        return "Helvetica"
-
-    font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-    for filename in ("segoeui.ttf", "arial.ttf"):
-        path = os.path.join(font_dir, filename)
-        if os.path.exists(path):
-            try:
-                if name not in pdfmetrics.getRegisteredFontNames():
-                    pdfmetrics.registerFont(TTFont(name, path))
-                return name
-            except Exception:
-                pass
+    Tries to register bundled fonts under `fonts/` if present; otherwise falls
+    back to a standard PDF font.
+    """
+    try:
+        font_regular = os.path.join(BASE_DIR, "fonts", "Inter-Regular.ttf")
+        if os.path.exists(font_regular):
+            pdfmetrics.registerFont(TTFont("Inter", font_regular))
+            return "Inter"
+    except Exception:
+        pass
     return "Helvetica"
 
 
-def reportlab_bold_font(name="ReportFontBold"):
-    if pdfmetrics is None or TTFont is None:
-        return "Helvetica-Bold"
-
-    font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-    for filename in ("segoeuib.ttf", "arialbd.ttf"):
-        path = os.path.join(font_dir, filename)
-        if os.path.exists(path):
-            try:
-                if name not in pdfmetrics.getRegisteredFontNames():
-                    pdfmetrics.registerFont(TTFont(name, path))
-                return name
-            except Exception:
-                pass
+def reportlab_bold_font() -> str:
+    """Return the registered bold font name for PDFs (fallback to Helvetica-Bold)."""
+    try:
+        font_bold = os.path.join(BASE_DIR, "fonts", "Inter-Bold.ttf")
+        if os.path.exists(font_bold):
+            pdfmetrics.registerFont(TTFont("Inter-Bold", font_bold))
+            return "Inter-Bold"
+    except Exception:
+        pass
     return "Helvetica-Bold"
 
 
-def markdown_inline_to_reportlab(text):
-    links = []
+def markdown_inline_to_reportlab(text: str) -> str:
+    """Convert a small subset of Markdown inline elements to ReportLab XML.
 
-    def link_repl(match):
-        idx = len(links)
-        links.append((match.group(1), match.group(2)))
-        return f"@@LINK{idx}@@"
+    Supports: links [text](url), bold **text**, italic *text* or _text_.
+    """
+    if not text:
+        return ""
 
-    text = strip_preview_emoji(text)
-    text = text.replace("\u2018", "'").replace("\u2019", "'")
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link_repl, text)
-    escaped = html.escape(text, quote=False)
+    # Extract links first to avoid HTML-escaping their characters
+    links: list[tuple[str, str]] = []
 
-    def bold_repl(match):
-        return f"<b>{match.group(1)}</b>"
+    def _link_repl(m: re.Match) -> str:
+        links.append((m.group(1), m.group(2)))
+        return f"@@LINK{len(links)-1}@@"
 
-    escaped = re.sub(r"\*\*(.+?)\*\*", bold_repl, escaped)
-    escaped = escaped.replace("_", "")
+    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _link_repl, text)
 
+    # Replace strong and emphasis with placeholders that do NOT use underscores
+    # (underscores would collide with the italics regex). Use tildes as safe
+    # markers and convert them to tags after HTML-escaping.
+    s = re.sub(r"\*\*(.+?)\*\*", lambda m: "~~BOPEN~~" + m.group(1) + "~~BCLOSE~~", s)
+    s = re.sub(
+        r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)",
+        lambda m: "~~IOPEN~~" + m.group(1) + "~~ICLOSE~~",
+        s,
+    )
+    s = re.sub(r"\*(.+?)\*", lambda m: "~~IOPEN~~" + m.group(1) + "~~ICLOSE~~", s)
+
+    escaped = html.escape(strip_preview_emoji(s), quote=False)
+
+    # Restore formatting tags from our safe placeholders
+    escaped = escaped.replace("~~BOPEN~~", "<b>").replace("~~BCLOSE~~", "</b>")
+    escaped = escaped.replace("~~IOPEN~~", "<i>").replace("~~ICLOSE~~", "</i>")
+
+    # Inject links
     for idx, (label, url) in enumerate(links):
         label_html = html.escape(strip_preview_emoji(label), quote=False)
         url_html = html.escape(url, quote=True)
@@ -395,6 +243,28 @@ def markdown_inline_to_reportlab(text):
         )
 
     return escaped
+
+
+def _clean_placeholders_for_pdf(s: str) -> str:
+    """Remove leftover placeholder tokens that may appear verbatim in PDFs.
+
+    This strips common markers produced during earlier markdown processing
+    (e.g. __B_OPEN__, _BOPEN_, BCLOSE__, etc.) so the Paragraph text is
+    rendered cleanly. Keep this conservative and run after inline->ReportLab
+    conversion so legitimate `<b>`/`<i>` tags are preserved.
+    """
+    if not s:
+        return s
+    # remove explicit placeholder tokens
+    s = re.sub(r"__B_OPEN__|__B_CLOSE__|__I_OPEN__|__I_CLOSE__", "", s)
+    s = re.sub(r"_BOPEN_|BCLOSE__|_BOPEN|CLOSE__", "", s)
+    # remove fragments like '(_B) (OPEN)' that can appear when PDF text is
+    # split into multiple drawing operations
+    s = re.sub(r"\(?_?B_?\)?\s*\(?OPEN\)?", "", s)
+    s = re.sub(r"\(?CLOSE_+__?\)?", "", s)
+    # collapse remaining multiple underscores
+    s = re.sub(r"_+", "", s)
+    return s
 
 
 def save_report_pdf(report):
@@ -486,11 +356,9 @@ def save_report_pdf(report):
         heading = re.match(r"^(#{1,4})\s+(.+)$", stripped)
         if heading:
             level = min(len(heading.group(1)), 3)
-            story.append(
-                Paragraph(
-                    markdown_inline_to_reportlab(heading.group(2)), styles[f"h{level}"]
-                )
-            )
+            txt = markdown_inline_to_reportlab(heading.group(2))
+            txt = _clean_placeholders_for_pdf(txt)
+            story.append(Paragraph(txt, styles[f"h{level}"]))
             continue
 
         bullet = re.match(r"^(\s*)-\s+(.+)$", line)
@@ -506,13 +374,9 @@ def save_report_pdf(report):
                     bulletIndent=level * 16,
                     spaceAfter=1,
                 )
-            story.append(
-                Paragraph(
-                    markdown_inline_to_reportlab(bullet.group(2)),
-                    bullet_styles[level],
-                    bulletText="\u2022",
-                )
-            )
+            txt = markdown_inline_to_reportlab(bullet.group(2))
+            txt = _clean_placeholders_for_pdf(txt)
+            story.append(Paragraph(txt, bullet_styles[level], bulletText="\u2022"))
             continue
 
         style = (
@@ -520,7 +384,9 @@ def save_report_pdf(report):
             if stripped.startswith("_") and stripped.endswith("_")
             else styles["body"]
         )
-        story.append(Paragraph(markdown_inline_to_reportlab(stripped), style))
+        txt = markdown_inline_to_reportlab(stripped)
+        txt = _clean_placeholders_for_pdf(txt)
+        story.append(Paragraph(txt, style))
 
     doc = SimpleDocTemplate(
         REPORT_PDF,
@@ -543,33 +409,6 @@ def save_report_exports(report):
     if pdf_path:
         exports.append(pdf_path)
 
-    if Image is None:
-        print(
-            "[PNG export skipped: Pillow is not installed.]",
-            file=sys.stderr,
-            flush=True,
-        )
-        return exports
-
-    fonts = {
-        "h1": load_export_font(34, bold=True),
-        "h2": load_export_font(26, bold=True),
-        "h3": load_export_font(22, bold=True),
-        "body": load_export_font(20),
-    }
-    probe = Image.new("RGB", (1, 1), "white")
-    probe_draw = ImageDraw.Draw(probe)
-
-    png_width = 1400
-    png_margin = 64
-    png_items = markdown_preview_items(
-        report, probe_draw, fonts, png_width - (png_margin * 2)
-    )
-    png_height = max(400, (png_margin * 2) + sum(item["height"] for item in png_items))
-    png = render_markdown_page(png_items, png_width, png_height, png_margin)
-    png.save(REPORT_PNG)
-
-    exports.append(REPORT_PNG)
     return exports
 
 
@@ -1338,6 +1177,43 @@ def parse_yahoo_dxy():
     return result
 
 
+# ──────────────── IDX Property from Yahoo Finance API ────────────────
+
+
+def parse_yahoo_idx_property():
+    """Fetch IDX Property (IDXPROPERT.JK) via Yahoo Finance v8 chart API."""
+    result = {}
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/IDXPROPERT.JK?interval=1d&range=5d"
+        resp = fetch(url, impersonate="chrome120", timeout=20)
+        data = resp.json()
+        meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
+        price = meta.get("regularMarketPrice")
+        prev_close = meta.get("chartPreviousClose")
+        if price and prev_close:
+            change = round(price - prev_close, 2)
+            pct = round(((price - prev_close) / prev_close) * 100, 2)
+            result["IDX Property"] = {
+                "close": str(price),
+                "change": f"{change:+.2f}",
+                "change_pct": f"{pct:+.2f}%",
+                "source": "Yahoo Finance API",
+            }
+        elif price:
+            result["IDX Property"] = {
+                "close": str(price),
+                "change": "",
+                "change_pct": "",
+                "source": "Yahoo Finance API",
+            }
+    except Exception as e:
+        print(
+            f"  WARN IDX Property (Yahoo API): {type(e).__name__}: {str(e)[:60]}",
+            file=sys.stderr,
+        )
+    return result
+
+
 # ──────────────── BAR CHART COAL ────────────────
 
 
@@ -1456,6 +1332,54 @@ def parse_bursa_cpo():
     return result
 
 
+# ──────────────── SUNSIRS WOOD PULP ────────────────
+
+
+def parse_sunsirs_woodpulp():
+    """Wood pulp spot price from SunSirs Daily table (Building materials sector)."""
+    result = {}
+    try:
+        resp = fetch("https://www.sunsirs.com/uk/sectors-17.html")
+        bs = BeautifulSoup(resp.text, "lxml")
+        tables = bs.find_all("table")
+        if not tables:
+            return result
+        # First table = Spot Price: Daily
+        table = tables[0]
+        rows = table.find_all("tr")
+        for row in rows[1:]:  # skip header
+            cells = row.find_all("td")
+            if len(cells) < 5:
+                continue
+            name = cells[0].get_text(strip=True)
+            if "Wood pulp" in name:
+                prev_raw = cells[2].get_text(strip=True).replace(",", "")
+                close_raw = cells[3].get_text(strip=True).replace(",", "")
+                pct_raw = (
+                    cells[4].get_text(strip=True).replace("%", "").replace(",", "")
+                )
+                try:
+                    close = float(close_raw)
+                    prev = float(prev_raw)
+                    change = close - prev
+                    pct = float(pct_raw)
+                    result["Woodpulp"] = {
+                        "close": f"{close:.2f}",
+                        "change": f"{change:+.2f}",
+                        "change_pct": f"{pct:+.2f}%",
+                        "source": "SunSirs",
+                    }
+                except (ValueError, TypeError):
+                    pass
+                break
+    except Exception as e:
+        print(
+            f"  WARN SunSirs Woodpulp: {type(e).__name__}: {str(e)[:60]}",
+            file=sys.stderr,
+        )
+    return result
+
+
 # ──────────────────── DATA COLLECTION ────────────────────
 
 
@@ -1501,6 +1425,8 @@ def collect_data():
         ("Gold Spot", "https://www.investing.com/currencies/xau-usd", "Gold(Spot)"),
     ]
     tasks = [
+        ("IDX Sector Indices", parse_yahoo_sector_indices),
+        ("JISDOR", parse_jisdor),
         (
             "Major Indices",
             lambda: parse_table_pages(
@@ -1551,8 +1477,8 @@ def collect_data():
                         "https://www.investing.com/rates-bonds/usa-government-bonds",
                         1,
                         2,
-                        -1,
-                        -1,
+                        6,
+                        7,
                     ),
                 ]
             ),
@@ -1570,23 +1496,31 @@ def collect_data():
                 ("HG%3DF", "Copper"),
             ]
         ],
-        ("IDX Sector Indices", parse_yahoo_sector_indices),
         ("DXY Yahoo API", parse_yahoo_dxy),
         ("IndoCDS", parse_indonesia_cds),
         ("Ammonia", parse_ammonia),
-        ("JISDOR", parse_jisdor),
+        # Additional parsers from origin/master
+        ("IDX Property", parse_yahoo_idx_property),
+        ("SunSirs Woodpulp", parse_sunsirs_woodpulp),
+        ("Bursa CPO", parse_bursa_cpo),
     ]
 
     log(f"Submitting {len(tasks)} scraper tasks with {MAX_FETCH_WORKERS} workers...")
     results_by_index = {}
     with ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS) as executor:
         futures = {
-            executor.submit(run_task, label, fn): (idx, label)
+            executor.submit(run_task, label, fn): idx
             for idx, (label, fn) in enumerate(tasks)
         }
         for future in as_completed(futures):
-            idx, label = futures[future]
-            results_by_index[idx] = future.result()
+            idx = futures[future]
+            try:
+                res = future.result()
+            except Exception as e:
+                res = {}
+                log(f"  WARN task {idx}: {type(e).__name__}: {str(e)[:80]}")
+            results_by_index[idx] = res
+            label = tasks[idx][0]
             log(f"  done: {label}")
 
     for idx in range(len(tasks)):
@@ -1598,8 +1532,12 @@ def collect_data():
     )
 
     log(f"\nDone in {elapsed:.1f}s -- {len(DATA)} items collected")
-
-    return DATA, sources, datetime.now().isoformat()
+    ts = datetime.now().isoformat()
+    # stamp per-key fetched_at if parsers didn't provide one
+    for v in DATA.values():
+        if isinstance(v, dict) and not v.get("fetched_at"):
+            v["fetched_at"] = ts
+    return DATA, sources, ts
 
 
 # ──────────────────── MARKET NEWS ────────────────────
@@ -1656,11 +1594,17 @@ def fmt(d):
     chg = get_point_change(d)
     pct = get_change(d)
     if pct:
-        if chg:
-            return f"{close} {chg} {pct}"
+        pct_clean = str(pct).strip()
+        if pct_clean.startswith("+"):
+            pct_clean = pct_clean[1:]
+        # Add % if missing (Investing API sometimes returns bare numbers)
+        if pct_clean and not pct_clean.endswith("%"):
+            pct_clean += "%"
+        if chg and chg not in ("", "None"):
+            return f"{close} {chg} {pct_clean}"
         else:
-            return f"{close} {pct}"
-    if chg:
+            return f"{close} {pct_clean}"
+    if chg and chg not in ("", "None"):
         return f"{close} {chg}"
     return close
 
@@ -1707,11 +1651,21 @@ def fmt_with_pct(d):
     close = close_str(d)
     pct = get_change(d)
     point = get_point_change(d)
-    if point and pct and not point.startswith("-19"):
-        return f"{close} {point} {pct}"
+    if point and pct and not (isinstance(point, str) and point.startswith("-19")):
+        pct_clean = str(pct).strip()
+        if pct_clean.startswith("+"):
+            pct_clean = pct_clean[1:]
+        if pct_clean and not pct_clean.endswith("%"):
+            pct_clean += "%"
+        return f"{close} {point} {pct_clean}"
     if pct:
-        return f"{close} {pct}"
-    if point and not point.startswith("-19"):
+        pct_clean = str(pct).strip()
+        if pct_clean.startswith("+"):
+            pct_clean = pct_clean[1:]
+        if pct_clean and not pct_clean.endswith("%"):
+            pct_clean += "%"
+        return f"{close} {pct_clean}"
+    if point and not (isinstance(point, str) and point.startswith("-19")):
         return f"{close} {point}"
     return close
 
@@ -1805,7 +1759,7 @@ def format_report(data):
             return None
         return fmt(d)
 
-    # ── Header ──
+    # Header
     now = datetime.now()
     hari = [
         "Monday",
@@ -1836,12 +1790,11 @@ def format_report(data):
     lines.append("---")
     lines.append("")
 
-    # ── Market News Summary ──
-    lines.append("## 📰 Market News Summary")
-    lines.append("")
-
+    # Market News
     news = fetch_market_news(5)
     if news:
+        lines.append("## 📰 Market News Summary")
+        lines.append("")
         lines.append("### Top Market News")
         for n in news:
             lines.append(f'- [{n["title"]}]({n["url"]})')
@@ -1850,7 +1803,7 @@ def format_report(data):
     lines.append("---")
     lines.append("")
 
-    # ── US Indices ──
+    # US Indices
     lines.append("## 🇺🇸 US Indices")
     for key, label in [
         ("Dow", "Dow"),
@@ -1863,19 +1816,15 @@ def format_report(data):
             lines.append(f"- **{label}:** {v}")
     lines.append("")
 
-    # ── Europe ──
+    # Europe
     lines.append("## 🇪🇺 Europe")
-    for key, label in [
-        ("DAX", "DAX"),
-        ("FTSE", "FTSE"),
-        ("CAC", "CAC"),
-    ]:
+    for key, label in [("DAX", "DAX"), ("FTSE", "FTSE"), ("CAC", "CAC")]:
         v = kv(key)
         if v:
             lines.append(f"- **{label}:** {v}")
     lines.append("")
 
-    # ── Asia ──
+    # Asia
     lines.append("## 🌏 Asia")
     for key, label in [
         ("Nikkei", "Nikkei"),
@@ -1889,25 +1838,24 @@ def format_report(data):
             lines.append(f"- **{label}:** {v}")
     lines.append("")
 
-    # ── Indonesia ──
+    # Indonesia
     lines.append("## 🇮🇩 Indonesia")
     idx_val = kv("IDX")
     if idx_val:
         lines.append(f"- **IDX:** {idx_val} 🔥")
-    lq_val = kv("LQ45")
-    if lq_val:
-        lines.append(f"- **LQ45:** {lq_val}")
-    kom_val = kv("IDX Kompas 100")
-    if kom_val:
-        lines.append(f"- **Kompas 100:** {kom_val}")
-    idx30_val = kv("IDX30")
-    if idx30_val:
-        lines.append(f"- **IDX30:** {idx30_val}")
+    for key, label in [
+        ("LQ45", "LQ45"),
+        ("IDX Kompas 100", "Kompas 100"),
+        ("IDX30", "IDX30"),
+    ]:
+        v = kv(key)
+        if v:
+            lines.append(f"- **{label}:** {v}")
     jisdor_val = kv("Jisdor")
     if jisdor_val:
         lines.append(f"- **Jisdor:** {jisdor_val}")
 
-    idx_sectors = [
+    for k, label in [
         ("IDXEnergy", "Energy"),
         ("IDX BscMat", "Basic Materials"),
         ("IDXIndst", "Industrial"),
@@ -1920,15 +1868,13 @@ def format_report(data):
         ("IDXCYCLC", "Consumer Cyclical"),
         ("IDXNONCYC", "Consumer Non-Cyclical"),
         ("IDXHlthcare", "Healthcare"),
-    ]
-    for k, label in idx_sectors:
+    ]:
         v = kv(k)
         if v:
             lines.append(f"- **IDX {label}:** {v}")
-
     lines.append("")
 
-    # ── FX & Bonds ──
+    # FX & Bonds
     lines.append("## 💵 FX & Bonds")
     idr_v = kv_full("IDR")
     if idr_v:
@@ -1937,14 +1883,12 @@ def format_report(data):
     if euro_v:
         lines.append(f"- **EUR/USD:** {euro_v}")
 
-    # DXY (USD Index)
     dxy = data.get("USDIndx")
     if isinstance(dxy, dict) and is_valid_data(dxy):
         dxy_fmt = fmt(dxy)
         if dxy_fmt:
             lines.append(f"- **DXY:** {dxy_fmt}")
 
-    # US Treasuries (show unified percent formatting)
     us10 = data.get("US10Yr")
     us2 = data.get("US2Yr")
     us30 = data.get("US30Yr")
@@ -1958,12 +1902,10 @@ def format_report(data):
     if treas_parts:
         lines.append(f"- **US Treasuries:** {' | '.join(treas_parts)}")
 
-    # Indo 10Y (format as percent)
     indo10 = data.get("Indo10Yr")
     if isinstance(indo10, dict) and is_valid_data(indo10):
         lines.append(f"- **Indo10Yr:** {format_percent_value(indo10)}")
 
-    # ICBI should be shown under FX & Bonds below Indo10Yr
     icbi_val = kv_full("ICBI")
     if icbi_val:
         lines.append(f"- **ICBI:** {icbi_val}")
@@ -1971,22 +1913,22 @@ def format_report(data):
     icds = data.get("IndoCDS 5yr")
     if isinstance(icds, dict) and is_valid_data(icds):
         icds_v = icds.get("close", "")
-        icds_chg = icds.get("change", "")
-        icds_pct = icds.get("change_pct", "")
         if icds_v:
             parts = []
-            if icds_chg and icds_chg not in ("", "None"):
-                ch = str(icds_chg).strip()
-                if not ch.startswith(("+", "-")):
-                    ch = "+" + ch
-                parts.append(ch)
-            if icds_pct and icds_pct not in ("", "None"):
-                pc = str(icds_pct).strip()
-                if not pc.endswith("%"):
-                    pc += "%"
-                if not pc.startswith(("+", "-")):
-                    pc = "+" + pc
-                parts.append(pc)
+            ch = icds.get("change", "")
+            pc = icds.get("change_pct", "")
+            if ch and ch not in ("", "None"):
+                chs = str(ch).strip()
+                if not chs.startswith(("+", "-")):
+                    chs = "+" + chs
+                parts.append(chs)
+            if pc and pc not in ("", "None"):
+                pcs = str(pc).strip()
+                if not pcs.endswith("%"):
+                    pcs += "%"
+                if not pcs.startswith(("+", "-")):
+                    pcs = "+" + pcs
+                parts.append(pcs)
             cds_str = f"{icds_v}"
             if parts:
                 cds_str = cds_str + " " + " ".join(parts)
@@ -1994,7 +1936,7 @@ def format_report(data):
 
     lines.append("")
 
-    # ── Energy ──
+    # Energy
     lines.append("## 🛢️ Energy")
     for key, label, prefix in [
         ("Oil(WT)", "Oil WTI", "$"),
@@ -2004,14 +1946,12 @@ def format_report(data):
         d = data.get(key)
         if isinstance(d, dict) and is_valid_data(d):
             lines.append(f"- **{label}:** {format_currency_value(d, prefix)}")
-
     lines.append("")
 
-    # ── Coal (Barchart) ──
+    # Coal (Barchart)
     lines.append("### Coal (Barchart) 🔄")
     coal_nwl = data.get("Coal(Nwl)")
     coal_rot = data.get("Coal(Rot)")
-
     if isinstance(coal_nwl, dict) and coal_nwl.get("contracts"):
         lines.append("- **Newcastle:**")
         for c in coal_nwl["contracts"]:
@@ -2059,7 +1999,7 @@ def format_report(data):
                 lines.append(f'  - **{c["month"]}:** {c["price"]}')
     lines.append("")
 
-    # ── Metals & Mining ──
+    # Metals & Mining
     lines.append("## 🏗️ Metals & Mining")
     for key, label in [
         ("Gold(Spot)", "Gold"),
@@ -2076,7 +2016,7 @@ def format_report(data):
             lines.append(f"- **{label}:** {v}")
     lines.append("")
 
-    # ── Komoditas Lain ──
+    # Komoditas Lain
     lines.append("## 🌿 Komoditas Lain")
     for key, label in [
         ("CPO", "CPO"),
@@ -2099,7 +2039,7 @@ def format_report(data):
                 lines.append(f"- **{label}:** {v}")
     lines.append("")
 
-    # ── ETFs & Stocks ──
+    # ETFs & Stocks
     lines.append("## 📈 ETFs & Stocks")
     for key, label in [("EIDO", "EIDO"), ("TLKM", "TLKM"), ("EEM", "EEM")]:
         d = data.get(key)
@@ -2118,7 +2058,7 @@ def format_report(data):
                     lines.append(f"- **{label}:** {c}")
     lines.append("")
 
-    # ── Footer ──
+    # Footer
     lines.append("---")
     lines.append("")
     lines.append("## Footer")
@@ -2238,15 +2178,41 @@ def main():
                 and cache_raw
                 and isinstance(cache_raw.get("data"), dict)
             ):
-                # Merge: only overwrite keys that have valid new data; keep old otherwise
+                # Perform per-key partial-cache merge using fetched_at timestamps.
+                # Rule: if cached entry exists and its fetched_at is <1 hour old and
+                # the new value is invalid/missing, keep the cached value.
                 merged = dict(cache_raw.get("data", {}))
+                now_ts = datetime.now()
                 for k, v in data.items():
+                    # new value valid -> accept
                     if is_valid_data(v):
                         merged[k] = v
-                    else:
-                        # keep existing if present
-                        if k not in merged:
-                            merged[k] = v
+                        continue
+
+                    # new value invalid -> consider cache
+                    cached_item = merged.get(k)
+                    if isinstance(cached_item, dict):
+                        fetched_at = cached_item.get("fetched_at") or cache_raw.get(
+                            "timestamp"
+                        )
+                        try:
+                            if fetched_at:
+                                then = datetime.fromisoformat(fetched_at)
+                                age_seconds = (now_ts - then).total_seconds()
+                                if age_seconds <= 3600:
+                                    # keep cached recent value
+                                    continue
+                        except Exception:
+                            # fall through to replacing if parsing fails
+                            pass
+                    # otherwise, store whatever new v we have (even invalid)
+                    merged[k] = v
+
+                # also merge in any new keys that were only in cache but not in current data
+                for k, v in cache_raw.get("data", {}).items():
+                    if k not in merged:
+                        merged[k] = v
+
                 raw_out["data"] = merged
                 raw_out["sources_used"] = sorted(
                     set(sources) | set(cache_raw.get("sources_used", []))
@@ -2274,11 +2240,8 @@ def main():
     report = format_report(data)
     print(report, flush=True)
 
-    # Save report to output files
+    # Save report to output files (no Markdown/PNG exports per configuration)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    with open(REPORT_MD, "w", encoding="utf-8") as f:
-        f.write(report)
-    print(f"\n\n[Report saved to {REPORT_MD}]", file=sys.stderr, flush=True)
 
     # Save WhatsApp-friendly plaintext export
     try:
