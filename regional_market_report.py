@@ -23,8 +23,52 @@ from threading import BoundedSemaphore
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 from typing import Any, cast
+import logging
 
-import curl_cffi.requests as req
+# Module logger: debug messages are off by default; enable with --debug or --verbose
+logger = logging.getLogger(__name__)
+
+# Prefer curl_cffi for faster, modern TLS handling. Fall back to requests
+# when curl_cffi isn't installed (useful in dev environments).
+try:
+    import curl_cffi.requests as req
+except Exception:
+    import requests as _requests
+
+    class _ReqAdapter:
+        def __init__(self):
+            self._session = _requests.Session()
+
+        def get(self, url, impersonate=None, timeout=15, headers=None, **kwargs):
+            hdrs = dict(headers or {})
+            if impersonate and "User-Agent" not in hdrs:
+                hdrs["User-Agent"] = (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+            return self._session.get(url, timeout=timeout, headers=hdrs, **kwargs)
+
+        def post(
+            self,
+            url,
+            data=None,
+            json=None,
+            impersonate=None,
+            timeout=15,
+            headers=None,
+            **kwargs,
+        ):
+            hdrs = dict(headers or {})
+            if impersonate and "User-Agent" not in hdrs:
+                hdrs["User-Agent"] = (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+            return self._session.post(
+                url, data=data, json=json, timeout=timeout, headers=hdrs, **kwargs
+            )
+
+    req = _ReqAdapter()
 
 from bs4 import BeautifulSoup
 
@@ -42,7 +86,7 @@ from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
 # runtime knobs
 MAX_FETCH_WORKERS = 8
 IMPRERSONATE = "chrome120"
-RETRY_IMPRERSONATE = ["chrome120", "chrome119", "firefox120"]
+RETRY_IMPRERSONATE = ["chrome120", "chrome119"]
 
 # HTTP headers
 HEADERS = {
@@ -127,23 +171,71 @@ def fetch(
     """
     sem = _get_host_semaphore(url)
     last_exc = None
+    # Build impersonation rotation list: prefer provided impersonate, then defaults
+    if impersonate:
+        impersonations = [impersonate] + [
+            i for i in RETRY_IMPRERSONATE if i != impersonate
+        ]
+    else:
+        impersonations = [IMPRERSONATE] + [
+            i for i in RETRY_IMPRERSONATE if i != IMPRERSONATE
+        ]
+
     for attempt in range(max_retries):
         sem.acquire()
         try:
             try:
+                chosen_imp = impersonations[attempt % len(impersonations)]
+                # debug trace for impersonation attempts
+                # Note: keep lightweight to avoid noisy logs
+                logger.debug(
+                    "fetch attempt=%d impersonate=%s url=%s", attempt, chosen_imp, url
+                )
                 resp = req.get(
                     url,
-                    impersonate=cast(Any, impersonate or IMPRERSONATE),
+                    impersonate=cast(Any, chosen_imp),
                     timeout=timeout,
                     headers=headers,
                 )
-                # treat 200 as success; for 403/429 try again with backoff
+                # treat 200 as success
                 if getattr(resp, "status_code", None) == 200:
                     return resp
+
+                # On 403/429, try a lightweight fallback: request once without
+                # impersonation and with simple headers (may bypass anti-bot).
                 if getattr(resp, "status_code", None) in (403, 429):
-                    last_exc = Exception(f"HTTP {resp.status_code}")
-                    time.sleep(1 + attempt)
+                    status = getattr(resp, "status_code", None)
+                    logger.debug(
+                        "fetch received %s for %s (impersonate=%s)",
+                        status,
+                        url,
+                        chosen_imp,
+                    )
+                    try:
+                        alt_headers = dict(headers or {})
+                        alt_headers.setdefault("User-Agent", HEADERS.get("User-Agent"))
+                        alt_headers.setdefault(
+                            "Accept-Language", HEADERS.get("Accept-Language")
+                        )
+                        logger.debug(
+                            "fetch fallback: trying without impersonate for %s", url
+                        )
+                        alt_resp = req.get(
+                            url, impersonate=None, timeout=timeout, headers=alt_headers
+                        )
+                        alt_status = getattr(alt_resp, "status_code", None)
+                        if alt_status == 200:
+                            return alt_resp
+                        if alt_status not in (403, 429) and alt_status is not None:
+                            return alt_resp
+                        last_exc = Exception(f"HTTP {alt_status}")
+                    except Exception as e:
+                        last_exc = e
+
+                    # longer backoff for anti-bot cases before retrying
+                    time.sleep(2 + attempt * 2)
                     continue
+
                 return resp
             except Exception as e:
                 last_exc = e
@@ -672,45 +764,97 @@ def parse_commodities_futures():
             chg_idx = find_header_index(["change", "chg"]) or None
             pct_idx = find_header_index(["%", "change (%)", "chg%", "change%", "ch%"])
 
+            def _normalize_name(n: str) -> str:
+                s = n or ""
+                s = s.strip()
+                # remove parenthetical notes like (Jul 26) and similar
+                s = re.sub(r"\(.*?\)", "", s)
+                # remove month tokens like 'Jul 26' or 'August 26'
+                s = re.sub(
+                    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*\d{1,2}\b",
+                    "",
+                    s,
+                    flags=re.I,
+                )
+                # strip 'derived' suffix and extra whitespace
+                s = re.sub(r"\s*derived$", "", s, flags=re.I).strip()
+                s = re.sub(r"\s+", " ", s)
+                return s
+
             for row in rows[1:]:
                 cells = row.find_all("td")
-                if not cells or name_idx >= len(cells):
+                if not cells:
                     continue
-                name = cells[name_idx].get_text(" ", strip=True)
-                name_clean = re.sub(r"\s*derived$", "", name).strip()
-                if name_clean not in wanted:
+                name_raw = (
+                    cells[name_idx].get_text(" ", strip=True)
+                    if name_idx < len(cells)
+                    else cells[0].get_text(" ", strip=True)
+                )
+                name_norm = _normalize_name(name_raw)
+                # lightweight debug trace to help diagnose missing matches
+                logger.debug("Commodities row: raw=%r norm=%r", name_raw, name_norm)
+
+                # find the best matching wanted key (robust substring/word match)
+                matched_key = None
+                name_l = name_norm.lower()
+                for wk in wanted.keys():
+                    if wk.lower() == name_l:
+                        matched_key = wk
+                        break
+                if not matched_key:
+                    for wk in wanted.keys():
+                        if wk.lower() in name_l or name_l in wk.lower():
+                            matched_key = wk
+                            break
+                if not matched_key:
+                    # token overlap (require at least 3-char token to avoid spurious matches)
+                    tokens = re.findall(r"\w{3,}", name_l)
+                    for wk in wanted.keys():
+                        wk_l = wk.lower()
+                        for t in tokens:
+                            if t in wk_l:
+                                matched_key = wk
+                                break
+                        if matched_key:
+                            break
+                if not matched_key:
+                    logger.debug("Commodities: no match for '%s'", name_norm)
                     continue
 
+                # robustly locate numeric fields after the name cell
                 last_txt = ""
                 chg_txt = ""
                 pct_txt = ""
 
-                # last
+                # attempt by header indices first
                 if isinstance(last_idx, int) and last_idx < len(cells):
                     last_txt = cells[last_idx].get_text(strip=True)
-                else:
+
+                # fallback: find the first numeric-like cell after the name column
+                if not last_txt:
                     for c in cells[name_idx + 1 :]:
                         t = c.get_text(strip=True)
-                        if re.match(r"^[+-]?\d[\d,\.]*$", t):
-                            last_txt = t
-                            break
+                        if re.search(r"[0-9]", t) and re.search(r"\d", t):
+                            # prefer values that look like a price (contains digit and dot or comma)
+                            if re.match(r"^[+-]?\d[\d,\.]*%?$", t):
+                                last_txt = t
+                                break
 
-                # change
+                # change: try header index then first numeric after last that's different
                 if chg_idx is not None and chg_idx < len(cells):
                     chg_txt = cells[chg_idx].get_text(strip=True)
                 else:
-                    # find the first numeric after last_txt that's not the same
                     for c in cells[name_idx + 1 :]:
                         t = c.get_text(strip=True)
                         if not t:
                             continue
                         if t == last_txt:
                             continue
-                        if re.match(r"^[+-]?\d[\d,\.]*$", t):
+                        if re.match(r"^[+-]?\d[\d,\.]*%?$", t):
                             chg_txt = t
                             break
 
-                # percent
+                # percent: prefer explicit '%' occurrence from the end of the row
                 if pct_idx is not None and pct_idx < len(cells):
                     pct_txt = cells[pct_idx].get_text(strip=True)
                 else:
@@ -723,13 +867,74 @@ def parse_commodities_futures():
                 if not last_txt:
                     continue
 
-                code = wanted[name_clean]
+                code = wanted[matched_key]
+                logger.debug(
+                    "Commodities: matched %r -> %r (code=%s)",
+                    name_norm,
+                    matched_key,
+                    code,
+                )
                 results[code] = {
                     "close": clean_num(last_txt),
                     "change": clean_num(chg_txt) if chg_txt else None,
                     "change_pct": pct_txt,
                     "source": "Investing Futures",
                 }
+            # If some wanted items were not found in the tables (Investing may
+            # render them via different tables or separate instrument pages),
+            # attempt fallback to their instrument pages.
+            missing_codes = [c for c in wanted.values() if c not in results]
+            if missing_codes:
+                fallback_urls = {
+                    "Oil(WT)": [
+                        "https://www.investing.com/commodities/crude-oil",
+                        "https://www.investing.com/commodities/crude-oil-wti",
+                    ],
+                    "Oil(Brn)": [
+                        "https://www.investing.com/commodities/brent-oil",
+                        "https://www.investing.com/commodities/brent-oil-futures",
+                    ],
+                    "Ntrl Gas": [
+                        "https://www.investing.com/commodities/natural-gas",
+                        "https://www.investing.com/commodities/natural-gas-futures",
+                    ],
+                    "Aluminium": [
+                        "https://www.investing.com/commodities/aluminium",
+                        "https://www.investing.com/commodities/aluminum",
+                    ],
+                    "Nickel": [
+                        "https://www.investing.com/commodities/nickel",
+                    ],
+                }
+                for code in missing_codes:
+                    urls = fallback_urls.get(code, [])
+                    for url in urls:
+                        try:
+                            logger.debug(
+                                "Commodities: fallback try %s for code %s", url, code
+                            )
+                            parsed = parse_instrument_page(
+                                url, "Investing Futures", code
+                            )
+                            if parsed and isinstance(parsed, dict) and parsed.get(code):
+                                val = parsed.get(code)
+                                logger.debug(
+                                    "Commodities: fallback parsed for %s: %s",
+                                    code,
+                                    bool(val),
+                                )
+                                if is_valid_data(val):
+                                    results[code] = val
+                                    break
+                        except Exception as e:
+                            logger.warning(
+                                "Commodities fallback %s: %s: %s",
+                                url,
+                                type(e).__name__,
+                                str(e)[:80],
+                            )
+                            # ignore and try next fallback URL
+                            continue
     except Exception as e:
         print(f"  WARN Commodities: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
     return results
@@ -1449,6 +1654,16 @@ def collect_data():
         ("USD/IDR", "https://www.investing.com/currencies/usd-idr", "IDR"),
         ("EUR/USD", "https://www.investing.com/currencies/eur-usd", "Euro"),
         ("Gold Spot", "https://www.investing.com/currencies/xau-usd", "Gold(Spot)"),
+        # Additional direct instrument pages to ensure key commodities are fetched
+        ("Crude Oil WTI", "https://www.investing.com/commodities/crude-oil", "Oil(WT)"),
+        ("Brent Oil", "https://www.investing.com/commodities/brent-oil", "Oil(Brn)"),
+        (
+            "Natural Gas",
+            "https://www.investing.com/commodities/natural-gas",
+            "Ntrl Gas",
+        ),
+        ("Nickel", "https://www.investing.com/commodities/nickel", "Nickel"),
+        ("Aluminium", "https://www.investing.com/commodities/aluminium", "Aluminium"),
     ]
     tasks = [
         ("IDX Sector Indices", parse_yahoo_sector_indices),
@@ -1483,6 +1698,7 @@ def collect_data():
                 ]
             ),
         ),
+        ("SunSirs Woodpulp", parse_sunsirs_woodpulp),
         ("Commodities", parse_commodities_futures),
         ("Coal from Barchart", parse_barchart_coal),
         *[
@@ -1525,9 +1741,7 @@ def collect_data():
         ("DXY Yahoo API", parse_yahoo_dxy),
         ("IndoCDS", parse_indonesia_cds),
         ("Ammonia", parse_ammonia),
-        # Additional parsers from origin/master
         ("IDX Property", parse_yahoo_idx_property),
-        ("SunSirs Woodpulp", parse_sunsirs_woodpulp),
         ("Bursa CPO", parse_bursa_cpo),
     ]
 
@@ -1810,7 +2024,7 @@ def format_report(data):
         "Nov",
         "Dec",
     ][now.month - 1]
-    lines.append("# 📊 Regional Markets Screener")
+    lines.append("# 📊 Good Morning")
     lines.append(f"_🗓️ {hari}, {now.day} {bulan} {now.year}_")
     lines.append("")
     lines.append("---")
@@ -1881,52 +2095,10 @@ def format_report(data):
     if jisdor_val:
         lines.append(f"- **Jisdor:** {jisdor_val}")
 
-    for k, label in [
-        ("IDXEnergy", "Energy"),
-        ("IDX BscMat", "Basic Materials"),
-        ("IDXIndst", "Industrial"),
-        ("IDX Tech", "Technology"),
-        ("IDX Finance", "Finance"),
-        ("IDX Banking", "Banking"),
-        ("IDX Infra", "Infrastructure"),
-        ("IDX Property", "Property"),
-        ("IDX Transprt", "Transportation"),
-        ("IDXCYCLC", "Consumer Cyclical"),
-        ("IDXNONCYC", "Consumer Non-Cyclical"),
-        ("IDXHlthcare", "Healthcare"),
-    ]:
-        v = kv(k)
-        if v:
-            lines.append(f"- **IDX {label}:** {v}")
-    lines.append("")
-
-    # FX & Bonds
-    lines.append("## 💵 FX & Bonds")
+    # Indonesia-specific FX / bonds: USD/IDR, Indo10Yr, ICBI, IndoCDS
     idr_v = kv_full("IDR")
     if idr_v:
         lines.append(f"- **USD/IDR:** {idr_v}")
-    euro_v = kv_full("Euro")
-    if euro_v:
-        lines.append(f"- **EUR/USD:** {euro_v}")
-
-    dxy = data.get("USDIndx")
-    if isinstance(dxy, dict) and is_valid_data(dxy):
-        dxy_fmt = fmt(dxy)
-        if dxy_fmt:
-            lines.append(f"- **DXY:** {dxy_fmt}")
-
-    us10 = data.get("US10Yr")
-    us2 = data.get("US2Yr")
-    us30 = data.get("US30Yr")
-    treas_parts = []
-    if isinstance(us10, dict) and is_valid_data(us10):
-        treas_parts.append(f"US10Yr {format_percent_value(us10)}")
-    if isinstance(us2, dict) and is_valid_data(us2):
-        treas_parts.append(f"US2Yr {format_percent_value(us2)}")
-    if isinstance(us30, dict) and is_valid_data(us30):
-        treas_parts.append(f"US30Yr {format_percent_value(us30)}")
-    if treas_parts:
-        lines.append(f"- **US Treasuries:** {' | '.join(treas_parts)}")
 
     indo10 = data.get("Indo10Yr")
     if isinstance(indo10, dict) and is_valid_data(indo10):
@@ -1959,6 +2131,52 @@ def format_report(data):
             if parts:
                 cds_str = cds_str + " " + " ".join(parts)
             lines.append(f"- **IndoCDS 5yr:** {cds_str}")
+
+    for k, label in [
+        ("IDXEnergy", "Energy"),
+        ("IDX BscMat", "Basic Materials"),
+        ("IDXIndst", "Industrial"),
+        ("IDX Tech", "Technology"),
+        ("IDX Finance", "Finance"),
+        ("IDX Banking", "Banking"),
+        ("IDX Infra", "Infrastructure"),
+        ("IDX Property", "Property"),
+        ("IDX Transprt", "Transportation"),
+        ("IDXCYCLC", "Consumer Cyclical"),
+        ("IDXNONCYC", "Consumer Non-Cyclical"),
+        ("IDXHlthcare", "Healthcare"),
+    ]:
+        v = kv(k)
+        if v:
+            lines.append(f"- **IDX {label}:** {v}")
+    lines.append("")
+
+    # FX & Bonds
+    lines.append("## 💵 FX & Bonds")
+    euro_v = kv_full("Euro")
+    if euro_v:
+        lines.append(f"- **EUR/USD:** {euro_v}")
+
+    dxy = data.get("USDIndx")
+    if isinstance(dxy, dict) and is_valid_data(dxy):
+        dxy_fmt = fmt(dxy)
+        if dxy_fmt:
+            lines.append(f"- **DXY:** {dxy_fmt}")
+
+    # US Treasuries — display vertical list in order: 2Yr, 10Yr, 30Yr
+    us2 = data.get("US2Yr")
+    us10 = data.get("US10Yr")
+    us30 = data.get("US30Yr")
+    if any(isinstance(x, dict) and is_valid_data(x) for x in (us2, us10, us30)):
+        lines.append("- **US Treasuries:**")
+        if isinstance(us2, dict) and is_valid_data(us2):
+            lines.append(f"  - **US2Yr:** {format_percent_value(us2)}")
+        if isinstance(us10, dict) and is_valid_data(us10):
+            lines.append(f"  - **US10Yr:** {format_percent_value(us10)}")
+        if isinstance(us30, dict) and is_valid_data(us30):
+            lines.append(f"  - **US30Yr:** {format_percent_value(us30)}")
+
+    # (Indonesia-specific items moved into the Indonesia section)
 
     lines.append("")
 
@@ -2082,11 +2300,9 @@ def format_report(data):
                     lines.append(f"- **{label}:** {c} {sp}")
                 else:
                     lines.append(f"- **{label}:** {c}")
-    lines.append("")
 
     # Footer
     lines.append("---")
-    lines.append("")
     lines.append("## Footer")
     lines.append("- **Broker Code:** AT")
     lines.append("- **Prepared by:** Desy Erawati / DE")
@@ -2172,6 +2388,14 @@ def main():
     if getattr(sys, "frozen", False) and "--partial-cache" not in sys.argv:
         partial_cache_mode = True
 
+    # Configure logging: enable debug output when requested
+    debug_mode = "--debug" in sys.argv or "--verbose" in sys.argv
+    if debug_mode:
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
+        logger.debug("Logging enabled: DEBUG")
+    else:
+        logging.basicConfig(level=logging.WARNING)
+
     # Load cache if requested or if partial-cache available
     cache_exists = os.path.exists(CACHE_JSON)
     cache_raw = None
@@ -2182,9 +2406,12 @@ def main():
         except Exception:
             cache_raw = None
 
-    # Decide whether to use cache-only (skip fetch) when in partial-cache mode
+    # Decide whether to use cache-only (skip fetch).
+    # Only auto-skip network fetch when the user explicitly asked to use cache
+    # (i.e. not in partial-cache mode). Partial-cache mode must still perform
+    # a fetch so missing keys can be filled and then merged.
     use_cache_only = False
-    if cache_raw and partial_cache_mode:
+    if cache_raw and not partial_cache_mode:
         try:
             cached_ts = cache_raw.get("timestamp")
             if cached_ts:
@@ -2230,12 +2457,12 @@ def main():
                 merged = dict(cache_raw.get("data", {}))
                 now_ts = datetime.now()
                 for k, v in data.items():
-                    # new value valid -> accept
+                    # if the new value is valid, accept it
                     if is_valid_data(v):
                         merged[k] = v
                         continue
 
-                    # new value invalid -> consider cache
+                    # new value invalid -> keep recent cached value if available
                     cached_item = merged.get(k)
                     if isinstance(cached_item, dict):
                         fetched_at = cached_item.get("fetched_at") or cache_raw.get(
@@ -2249,10 +2476,12 @@ def main():
                                     # keep cached recent value
                                     continue
                         except Exception:
-                            # fall through to replacing if parsing fails
+                            # if parsing fails, fall through and skip storing invalid new value
                             pass
-                    # otherwise, store whatever new v we have (even invalid)
-                    merged[k] = v
+
+                    # new value invalid and no recent cached value -> skip adding it
+                    # (do not overwrite or create entries with invalid data)
+                    continue
 
                 # also merge in any new keys that were only in cache but not in current data
                 for k, v in cache_raw.get("data", {}).items():
