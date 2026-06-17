@@ -537,6 +537,67 @@ def clean_num(s):
     return s
 
 
+def parse_barchart_price_change(price_raw, chg_raw):
+    """Robust parsing for Barchart price and change cells.
+
+    Handles values like '113.65', '113.65 unch', 'unch', '(unch)', '113.65 +0.50',
+    and returns (price_str, change_str, change_pct_str) where any may be None.
+    """
+
+    def _find_num(x):
+        if not x:
+            return None
+        m = re.search(r"[-+]?\d{1,3}(?:[\d,]*\d)?(?:\.\d+)?", x)
+        if not m:
+            return None
+        try:
+            return float(m.group(0).replace(",", ""))
+        except Exception:
+            return None
+
+    price = _find_num(price_raw)
+
+    chg_num = None
+    if chg_raw:
+        # explicit numeric change
+        explicit = _find_num(chg_raw)
+        if explicit is not None:
+            chg_num = explicit
+        # explicit 'unch' token means change is 0 but not an explicit numeric value
+        elif re.search(r"\bunch\b", chg_raw, flags=re.I) or chg_raw.strip().lower() in (
+            "unch",
+            "(unch)",
+            "unch unch",
+        ):
+            chg_num = 0.0
+
+    # If price exists, compute percentage if possible
+    if price is not None:
+        if chg_num is None:
+            # no reliable change info — treat as implicit 0 (not explicit)
+            chg_num = 0.0
+
+        prev_close = price - chg_num
+        try:
+            pct = round((chg_num / prev_close) * 100, 2) if prev_close else 0.0
+        except Exception:
+            pct = 0.0
+
+        price_str = f"{price:.2f}"
+        change_str = f"{chg_num:+.2f}" if chg_num is not None else None
+        change_pct = f"{pct:+.2f}%"
+        return price_str, change_str, change_pct
+
+    # price missing but change present
+    if chg_num is not None:
+        price_str = None
+        change_str = f"{chg_num:+.2f}"
+        change_pct = ""
+        return price_str, change_str, change_pct
+
+    return None, None, None
+
+
 def code_from_name(name):
     mapping = {
         "dow jones": "Dow",
@@ -1104,60 +1165,14 @@ def parse_yahoo_sector_indices():
         ("IDX Banking", "INFOBANK15.JK"),
         ("IDX Property", "IDXPROPERT.JK"),
     ]
-    for code_name, ticker in sectors:
+    for name, ticker in sectors:
         try:
-            resp = fetch(
-                f"https://finance.yahoo.com/quote/{ticker}/",
-                impersonate="chrome120",
-                timeout=20,
-            )
-            soup = BeautifulSoup(resp.text, "lxml")
-            qsp = soup.find("span", {"data-testid": "qsp-price"})
-            price_str = qsp.get_text(strip=True) if qsp else None
-            price_str = (
-                str(price_str).replace(",", "") if price_str is not None else None
-            )
-            if not price_str:
-                pe = soup.find("fin-streamer", {"data-field": "regularMarketPrice"})
-                if pe and not pe.get("data-symbol"):
-                    price_str = pe.get("data-value", "") or pe.get_text(strip=True)
-                    price_str = (
-                        str(price_str).replace(",", "")
-                        if price_str is not None
-                        else None
-                    )
-            if not price_str:
-                continue
-            price = price_str
-            change = ""
-            change_pct = ""
-            prev_el = soup.find(
-                "fin-streamer", {"data-field": "regularMarketPreviousClose"}
-            )
-            if prev_el:
-                prev_raw = prev_el.get("data-value", "") or prev_el.get_text(strip=True)
-                prev_str = str(prev_raw).replace(",", "")
-                if prev_str:
-                    try:
-                        p = float(price)
-                        prev = float(prev_str)
-                        diff = round(p - prev, 2)
-                        pct = round((diff / prev) * 100, 2) if prev != 0 else 0
-                        change = f"+{diff}" if diff >= 0 else str(diff)
-                        change_pct = f"+{pct}%" if pct >= 0 else f"{pct}%"
-                    except (ValueError, TypeError):
-                        pass
-            result[code_name] = {
-                "close": price,
-                "change": change,
-                "change_pct": change_pct,
-                "source": "Yahoo Finance (Sector)",
-            }
+            parsed = parse_yahoo_finance(ticker, name)
+            if parsed and isinstance(parsed, dict):
+                result.update(parsed)
         except Exception as e:
-            print(
-                f"  WARN {code_name} (Yahoo Sector): {type(e).__name__}: {str(e)[:60]}",
-                file=sys.stderr,
-            )
+            logger.debug("parse_yahoo_sector_indices %s: %s", ticker, e)
+
     return result
 
 
@@ -1464,6 +1479,8 @@ def parse_barchart_coal():
         contracts = []
         for month_name, code in month_codes.items():
             sym = f"{root_sym}{code}26"
+
+            found_row = False
             try:
                 resp = fetch(
                     f"https://www.barchart.com/futures/quotes/{sym}/overview",
@@ -1474,38 +1491,40 @@ def parse_barchart_coal():
                 tables = soup.find_all("table")
                 for table in tables:
                     rows = table.find_all("tr")
-                    if rows and len(rows) > 1:
-                        cells = rows[1].find_all("td")
-                        if len(cells) >= 3 and cells[0].get_text(strip=True) == sym:
-                            price_raw = (
-                                cells[1]
-                                .get_text(strip=True)
-                                .replace("s", "")
-                                .replace(",", "")
+                    if not rows or len(rows) <= 1:
+                        continue
+                    # Search all data rows for a matching symbol
+                    for row in rows[1:]:
+                        cells = row.find_all("td")
+                        if len(cells) < 3:
+                            continue
+                        if cells[0].get_text(strip=True) != sym:
+                            continue
+                        price_raw = cells[1].get_text(" ", strip=True)
+                        chg_raw = cells[2].get_text(" ", strip=True)
+                        # normalize common noise
+                        price_raw = price_raw.replace("s", "").replace(",", "")
+                        chg_raw = chg_raw.replace(",", "")
+
+                        price_str, change_str, change_pct = parse_barchart_price_change(
+                            price_raw, chg_raw
+                        )
+
+                        if price_str or change_str:
+                            contracts.append(
+                                {
+                                    "month": month_name,
+                                    "price": price_str,
+                                    "change": change_str,
+                                    "change_pct": change_pct,
+                                }
                             )
-                            chg_raw = cells[2].get_text(strip=True).replace(",", "")
-                            try:
-                                price = float(price_raw)
-                                chg = float(chg_raw)
-                                prev_close = price - chg
-                                pct = (
-                                    round((chg / prev_close) * 100, 2)
-                                    if prev_close
-                                    else 0
-                                )
-                                contracts.append(
-                                    {
-                                        "month": month_name,
-                                        "price": f"{price:.2f}",
-                                        "change": f"{chg:+.2f}",
-                                        "change_pct": f"{pct:+.2f}%",
-                                    }
-                                )
-                            except:
-                                pass
-                            break
+                        found_row = True
+                        break
+                    if found_row:
+                        break
             except Exception as e:
-                pass
+                logger.debug("parse_barchart_coal page exception for %s: %s", sym, e)
 
         if contracts:
             result[label] = {
@@ -1637,11 +1656,6 @@ def collect_data():
             "https://www.investing.com/commodities/iron-ore-62-cfr-futures",
             "Iron Ore 62%",
         ),
-        (
-            "Woodpulp",
-            "https://id.investing.com/commodities/shfe-bleached-softwood-kraft-pulp-futures",
-            "Woodpulp",
-        ),
         ("Tin", "https://www.investing.com/commodities/tin", "Timah"),
         ("Silver", "https://www.investing.com/commodities/silver", "Silver"),
         ("Copper", "https://www.investing.com/commodities/copper", "Copper"),
@@ -1650,7 +1664,6 @@ def collect_data():
             "https://www.investing.com/indices/bloomberg-industrial-metals",
             "BCOMIN",
         ),
-        ("COMIN", "https://www.investing.com/indices/commodity-index", "Como Indx"),
         ("USD/IDR", "https://www.investing.com/currencies/usd-idr", "IDR"),
         ("EUR/USD", "https://www.investing.com/currencies/eur-usd", "Euro"),
         ("Gold Spot", "https://www.investing.com/currencies/xau-usd", "Gold(Spot)"),
@@ -1666,6 +1679,7 @@ def collect_data():
         ("Aluminium", "https://www.investing.com/commodities/aluminium", "Aluminium"),
     ]
     tasks = [
+        ("Coal from Barchart", parse_barchart_coal),
         ("IDX Sector Indices", parse_yahoo_sector_indices),
         ("JISDOR", parse_jisdor),
         (
@@ -1700,7 +1714,6 @@ def collect_data():
         ),
         ("SunSirs Woodpulp", parse_sunsirs_woodpulp),
         ("Commodities", parse_commodities_futures),
-        ("Coal from Barchart", parse_barchart_coal),
         *[
             (
                 label,
@@ -2424,30 +2437,10 @@ def main():
             cache_raw = None
 
     # Decide whether to use cache-only (skip fetch).
-    # Only auto-skip network fetch when the user explicitly asked to use cache
-    # (i.e. not in partial-cache mode). Partial-cache mode must still perform
-    # a fetch so missing keys can be filled and then merged.
-    use_cache_only = False
-    if cache_raw and not partial_cache_mode:
-        try:
-            cached_ts = cache_raw.get("timestamp")
-            if cached_ts:
-                then = datetime.fromisoformat(cached_ts)
-                age_seconds = (datetime.now() - then).total_seconds()
-                if age_seconds <= 3600:
-                    use_cache_only = True
-        except Exception:
-            use_cache_only = False
-
-    if (from_cache or use_cache_only) and cache_raw:
-        if use_cache_only and not from_cache:
-            print(
-                "[Using recent cache (<=1h); skipping network fetch)]",
-                file=sys.stderr,
-                flush=True,
-            )
-        else:
-            print("[Loading from cached screener data...]", file=sys.stderr, flush=True)
+    # Use cache-only only when explicitly requested via `--from-cache`.
+    # Partial-cache mode still performs network fetches to fill missing keys.
+    if from_cache and cache_raw:
+        print("[Loading from cached screener data...]", file=sys.stderr, flush=True)
         data = cache_raw.get("data", {})
         sources = cache_raw.get("sources_used", [])
         ts = cache_raw.get("timestamp", "")
