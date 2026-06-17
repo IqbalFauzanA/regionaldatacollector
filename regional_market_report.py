@@ -1835,11 +1835,10 @@ def fmt(d):
     pct = get_change(d)
     if pct:
         pct_clean = str(pct).strip()
-        if pct_clean.startswith("+"):
-            pct_clean = pct_clean[1:]
         # Add % if missing (Investing API sometimes returns bare numbers)
         if pct_clean and not pct_clean.endswith("%"):
             pct_clean += "%"
+        # Keep the sign (+/-) on percent values — do not strip '+'
         if chg and chg not in ("", "None"):
             return f"{close} {chg} {pct_clean}"
         else:
@@ -1893,15 +1892,12 @@ def fmt_with_pct(d):
     point = get_point_change(d)
     if point and pct and not (isinstance(point, str) and point.startswith("-19")):
         pct_clean = str(pct).strip()
-        if pct_clean.startswith("+"):
-            pct_clean = pct_clean[1:]
+        # Preserve leading +/-, and ensure percent sign
         if pct_clean and not pct_clean.endswith("%"):
             pct_clean += "%"
         return f"{close} {point} {pct_clean}"
     if pct:
         pct_clean = str(pct).strip()
-        if pct_clean.startswith("+"):
-            pct_clean = pct_clean[1:]
         if pct_clean and not pct_clean.endswith("%"):
             pct_clean += "%"
         return f"{close} {pct_clean}"
@@ -1980,6 +1976,40 @@ def format_currency_value(d, prefix="$"):
     return " ".join(parts)
 
 
+def decorate_value(d, base=None):
+    """Wrap numeric base string with bold markers if percent thresholds met.
+
+    Uses `get_change(d)` to determine percent magnitude. If abs(pct) > 3%
+    the returned string is bolded and appended with '‼️'. If abs(pct) > 2%
+    (and <= 3%) it is only bolded. If no percent is present, the base is
+    returned unchanged.
+    """
+    if base is None:
+        try:
+            base = fmt_with_pct(d) if isinstance(d, dict) else str(d)
+        except Exception:
+            base = str(d) if d is not None else ""
+    base = str(base).strip()
+    if not base:
+        return base
+    pct = get_change(d) if isinstance(d, dict) else ""
+    abs_pct = None
+    if pct and pct not in ("", "0", "0%"):
+        try:
+            abs_pct = abs(
+                float(str(pct).replace("%", "").replace("+", "").replace(",", ""))
+            )
+        except Exception:
+            abs_pct = None
+    if abs_pct is None:
+        return base
+    if abs_pct > 3.0:
+        return f"**{base}** ‼️"
+    if abs_pct > 2.0:
+        return f"**{base}**"
+    return base
+
+
 # ──────────────────── REPORT FORMATTER ────────────────────
 
 
@@ -1987,17 +2017,19 @@ def format_report(data):
     """Build the full report text."""
     lines = []
 
-    def kv(key, label=None):
+    def kv(key):
         d = data.get(key)
         if d is None:
             return None
-        return fmt_with_pct(d)
+        base = fmt_with_pct(d)
+        return decorate_value(d, base)
 
-    def kv_full(key, label=None):
+    def kv_full(key):
         d = data.get(key)
         if d is None:
             return None
-        return fmt(d)
+        base = fmt(d)
+        return decorate_value(d, base)
 
     # Header
     now = datetime.now()
@@ -2082,7 +2114,7 @@ def format_report(data):
     lines.append("## 🇮🇩 Indonesia")
     idx_val = kv("IDX")
     if idx_val:
-        lines.append(f"- **IDX:** {idx_val} 🔥")
+        lines.append(f"- **IDX:** {idx_val}")
     for key, label in [
         ("LQ45", "LQ45"),
         ("IDX Kompas 100", "Kompas 100"),
@@ -2091,18 +2123,40 @@ def format_report(data):
         v = kv(key)
         if v:
             lines.append(f"- **{label}:** {v}")
-    jisdor_val = kv("Jisdor")
-    if jisdor_val:
-        lines.append(f"- **Jisdor:** {jisdor_val}")
+
+    for k, label in [
+        ("IDXEnergy", "Energy"),
+        ("IDX BscMat", "Basic Materials"),
+        ("IDXIndst", "Industrial"),
+        ("IDX Tech", "Technology"),
+        ("IDX Finance", "Finance"),
+        ("IDX Banking", "Banking"),
+        ("IDX Infra", "Infrastructure"),
+        ("IDX Property", "Property"),
+        ("IDX Transprt", "Transportation"),
+        ("IDXCYCLC", "Consumer Cyclical"),
+        ("IDXNONCYC", "Consumer Non-Cyclical"),
+        ("IDXHlthcare", "Healthcare"),
+    ]:
+        v = kv(k)
+        if v:
+            lines.append(f"- **IDX {label}:** {v}")
+    lines.append("")
 
     # Indonesia-specific FX / bonds: USD/IDR, Indo10Yr, ICBI, IndoCDS
     idr_v = kv_full("IDR")
     if idr_v:
         lines.append(f"- **USD/IDR:** {idr_v}")
 
+    jisdor_val = kv("Jisdor")
+    if jisdor_val:
+        lines.append(f"- **Jisdor:** {jisdor_val}")
+
     indo10 = data.get("Indo10Yr")
     if isinstance(indo10, dict) and is_valid_data(indo10):
-        lines.append(f"- **Indo10Yr:** {format_percent_value(indo10)}")
+        lines.append(
+            f"- **Indo10Yr:** {decorate_value(indo10, format_percent_value(indo10))}"
+        )
 
     icbi_val = kv_full("ICBI")
     if icbi_val:
@@ -2130,25 +2184,7 @@ def format_report(data):
             cds_str = f"{icds_v}"
             if parts:
                 cds_str = cds_str + " " + " ".join(parts)
-            lines.append(f"- **IndoCDS 5yr:** {cds_str}")
-
-    for k, label in [
-        ("IDXEnergy", "Energy"),
-        ("IDX BscMat", "Basic Materials"),
-        ("IDXIndst", "Industrial"),
-        ("IDX Tech", "Technology"),
-        ("IDX Finance", "Finance"),
-        ("IDX Banking", "Banking"),
-        ("IDX Infra", "Infrastructure"),
-        ("IDX Property", "Property"),
-        ("IDX Transprt", "Transportation"),
-        ("IDXCYCLC", "Consumer Cyclical"),
-        ("IDXNONCYC", "Consumer Non-Cyclical"),
-        ("IDXHlthcare", "Healthcare"),
-    ]:
-        v = kv(k)
-        if v:
-            lines.append(f"- **IDX {label}:** {v}")
+            lines.append(f"- **IndoCDS 5yr:** {decorate_value(icds, cds_str)}")
     lines.append("")
 
     # FX & Bonds
@@ -2170,13 +2206,17 @@ def format_report(data):
     if any(isinstance(x, dict) and is_valid_data(x) for x in (us2, us10, us30)):
         lines.append("- **US Treasuries:**")
         if isinstance(us2, dict) and is_valid_data(us2):
-            lines.append(f"  - **US2Yr:** {format_percent_value(us2)}")
+            lines.append(
+                f"  - **US2Yr:** {decorate_value(us2, format_percent_value(us2))}"
+            )
         if isinstance(us10, dict) and is_valid_data(us10):
-            lines.append(f"  - **US10Yr:** {format_percent_value(us10)}")
+            lines.append(
+                f"  - **US10Yr:** {decorate_value(us10, format_percent_value(us10))}"
+            )
         if isinstance(us30, dict) and is_valid_data(us30):
-            lines.append(f"  - **US30Yr:** {format_percent_value(us30)}")
-
-    # (Indonesia-specific items moved into the Indonesia section)
+            lines.append(
+                f"  - **US30Yr:** {decorate_value(us30, format_percent_value(us30))}"
+            )
 
     lines.append("")
 
@@ -2189,7 +2229,9 @@ def format_report(data):
     ]:
         d = data.get(key)
         if isinstance(d, dict) and is_valid_data(d):
-            lines.append(f"- **{label}:** {format_currency_value(d, prefix)}")
+            lines.append(
+                f"- **{label}:** {decorate_value(d, format_currency_value(d, prefix))}"
+            )
     lines.append("")
 
     # Coal (Barchart)
@@ -2199,48 +2241,24 @@ def format_report(data):
     if isinstance(coal_nwl, dict) and coal_nwl.get("contracts"):
         lines.append("- **Newcastle:**")
         for c in coal_nwl["contracts"]:
-            ch = c.get("change", "")
-            pc = c.get("change_pct", "")
-            parts = []
-            if ch and ch not in ("", "None"):
-                chs = str(ch).strip()
-                if not chs.startswith(("+", "-")):
-                    chs = "+" + chs
-                parts.append(chs)
-            if pc and pc not in ("", "None"):
-                pcs = str(pc).strip()
-                if not pcs.endswith("%"):
-                    pcs += "%"
-                if not pcs.startswith(("+", "-")):
-                    pcs = "+" + pcs
-                parts.append(pcs)
-            if parts:
-                lines.append(f'  - **{c["month"]}:** {c["price"]} ' + " ".join(parts))
-            else:
-                lines.append(f'  - **{c["month"]}:** {c["price"]}')
+            d = {
+                "close": c.get("price"),
+                "change": c.get("change"),
+                "change_pct": c.get("change_pct"),
+            }
+            formatted = decorate_value(d, fmt_with_pct(d))
+            lines.append(f'  - **{c["month"]}:** {formatted}')
 
     if isinstance(coal_rot, dict) and coal_rot.get("contracts"):
         lines.append("- **Rotterdam:**")
         for c in coal_rot["contracts"]:
-            ch = c.get("change", "")
-            pc = c.get("change_pct", "")
-            parts = []
-            if ch and ch not in ("", "None"):
-                chs = str(ch).strip()
-                if not chs.startswith(("+", "-")):
-                    chs = "+" + chs
-                parts.append(chs)
-            if pc and pc not in ("", "None"):
-                pcs = str(pc).strip()
-                if not pcs.endswith("%"):
-                    pcs += "%"
-                if not pcs.startswith(("+", "-")):
-                    pcs = "+" + pcs
-                parts.append(pcs)
-            if parts:
-                lines.append(f'  - **{c["month"]}:** {c["price"]} ' + " ".join(parts))
-            else:
-                lines.append(f'  - **{c["month"]}:** {c["price"]}')
+            d = {
+                "close": c.get("price"),
+                "change": c.get("change"),
+                "change_pct": c.get("change_pct"),
+            }
+            formatted = decorate_value(d, fmt_with_pct(d))
+            lines.append(f'  - **{c["month"]}:** {formatted}')
     lines.append("")
 
     # Metals & Mining
@@ -2289,17 +2307,16 @@ def format_report(data):
         d = data.get(key)
         if isinstance(d, dict):
             c = close_str(d)
-            p = get_change(d)
             if c:
                 sp = get_point_change(d)
-                if p and sp:
-                    lines.append(f"- **{label}:** {c} {sp} {p}")
-                elif p:
-                    lines.append(f"- **{label}:** {c} {p}")
-                elif sp:
-                    lines.append(f"- **{label}:** {c} {sp}")
-                else:
-                    lines.append(f"- **{label}:** {c}")
+                p = get_change(d)
+                parts = []
+                if sp:
+                    parts.append(sp)
+                if p:
+                    parts.append(p)
+                base = f"{c} {' '.join(parts)}" if parts else f"{c}"
+                lines.append(f"- **{label}:** {decorate_value(d, base)}")
 
     # Footer
     lines.append("---")
