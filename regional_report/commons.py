@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 from threading import BoundedSemaphore
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -55,6 +56,8 @@ except Exception:
 
 
 MAX_FETCH_WORKERS = 8
+CACHE_MAX_AGE_SECONDS = 3600
+CACHE_MAX_CLOCK_SKEW_SECONDS = 300
 
 RETRY_IMPERSONATE = [
     "chrome120",
@@ -272,13 +275,82 @@ def _has_meaningful_change(value):
         return True
 
 
+def _has_meaningful_value(value):
+    if value is None:
+        return False
+    return str(value).strip() not in ("", "None")
+
+
 def is_valid_data(d):
     """Return True if a parsed data item looks usable."""
     if not isinstance(d, dict):
         return False
     close = d.get("close")
-    if close and str(close).strip() not in ("", "None"):
+    if _has_meaningful_value(close):
         return True
+    contracts = d.get("contracts")
+    if isinstance(contracts, list):
+        for contract in contracts:
+            if not isinstance(contract, dict):
+                continue
+            if _has_meaningful_value(contract.get("price")):
+                return True
+            if _has_meaningful_change(contract.get("change")):
+                return True
+            if _has_meaningful_change(contract.get("change_pct")):
+                return True
     return _has_meaningful_change(d.get("change")) or _has_meaningful_change(
         d.get("change_pct")
     )
+
+
+def _cache_item_timestamp(cache_raw, cached_item):
+    fetched_at = cached_item.get("fetched_at") if isinstance(cached_item, dict) else None
+    if not fetched_at and isinstance(cache_raw, dict):
+        fetched_at = cache_raw.get("timestamp")
+    if not fetched_at:
+        return None
+    try:
+        return datetime.fromisoformat(str(fetched_at))
+    except Exception:
+        return None
+
+
+def is_recent_cached_item(
+    cache_raw,
+    cached_item,
+    now_ts=None,
+    max_age_seconds=CACHE_MAX_AGE_SECONDS,
+):
+    """Return True when cached data is valid and has a fresh parseable timestamp."""
+    if not isinstance(cached_item, dict) or not is_valid_data(cached_item):
+        return False
+
+    then = _cache_item_timestamp(cache_raw, cached_item)
+    if then is None:
+        return False
+
+    if then.tzinfo:
+        now = datetime.now(then.tzinfo)
+    elif now_ts is not None and getattr(now_ts, "tzinfo", None) is None:
+        now = now_ts
+    else:
+        now = datetime.now()
+
+    try:
+        age_seconds = (now - then).total_seconds()
+    except Exception:
+        return False
+    return -CACHE_MAX_CLOCK_SKEW_SECONDS <= age_seconds <= max_age_seconds
+
+
+def normalize_cached_item_timestamp(cache_raw, cached_item):
+    """Copy a cached item and preserve the timestamp that made it fresh."""
+    if not isinstance(cached_item, dict):
+        return cached_item
+    normalized = dict(cached_item)
+    if not normalized.get("fetched_at") and isinstance(cache_raw, dict):
+        fetched_at = cache_raw.get("timestamp")
+        if fetched_at:
+            normalized["fetched_at"] = fetched_at
+    return normalized

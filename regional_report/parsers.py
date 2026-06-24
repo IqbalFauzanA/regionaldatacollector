@@ -12,13 +12,16 @@ from xml.etree import ElementTree as ET
 from bs4 import BeautifulSoup
 
 from .commons import (
+    CACHE_MAX_AGE_SECONDS,
     MAX_FETCH_WORKERS,
     RETRY_IMPERSONATE,
     ZH_HEADERS,
     clean_num,
     fetch,
     has_css_class,
+    is_recent_cached_item,
     is_valid_data,
+    normalize_cached_item_timestamp,
     req,
 )
 
@@ -1148,12 +1151,76 @@ def parse_sunsirs_woodpulp():
 # ──────────────────── DATA COLLECTION ────────────────────
 
 
-def collect_data():
+MAJOR_INDEX_KEYS = (
+    "Dow",
+    "S&P 500",
+    "Nasdaq",
+    "S&P 500 VIX",
+    "DAX",
+    "FTSE",
+    "CAC",
+    "Nikkei",
+    "Shanghai",
+    "HSI",
+    "KOSPI",
+)
+IDX_INDEX_KEYS = ("IDX", "LQ45", "IDX Kompas 100", "IDX30")
+IDX_SECTOR_KEYS = (
+    "IDXEnergy",
+    "IDX BscMat",
+    "IDXIndst",
+    "IDXNONCYC",
+    "IDXHlthcare",
+    "IDXCYCLC",
+    "IDX Tech",
+    "IDX Transprt",
+    "IDX Infra",
+    "IDX Finance",
+    "IDX Banking",
+    "IDX Property",
+)
+COMMODITY_FUTURES_KEYS = (
+    "Oil(WT)",
+    "Oil(Brn)",
+    "Ntrl Gas",
+    "Gold",
+    "Silver",
+    "Copper",
+    "Aluminium",
+    "Nickel",
+    "Timah",
+    "Corn",
+    "SoybeanOil",
+    "Wheat",
+)
+US_BOND_KEYS = ("US2Yr", "US5Yr", "US10Yr", "US30Yr")
+
+
+def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
     """Run all scrapers, return (data_dict, sources_list, timestamp)."""
     DATA = {}
 
     def log(msg):
         print(msg, file=sys.stderr, flush=True)
+
+    cached_data = (
+        cache_raw.get("data", {})
+        if isinstance(cache_raw, dict) and isinstance(cache_raw.get("data"), dict)
+        else {}
+    )
+    cache_now = datetime.now()
+
+    def fresh_cached_results(keys):
+        results = {}
+        if not cached_data or not keys:
+            return results
+        for key in keys:
+            cached_item = cached_data.get(key)
+            if is_recent_cached_item(
+                cache_raw, cached_item, cache_now, cache_max_age_seconds
+            ):
+                results[key] = normalize_cached_item_timestamp(cache_raw, cached_item)
+        return results
 
     def run_task(label, fn):
         try:
@@ -1194,9 +1261,9 @@ def collect_data():
         ("Aluminium", "https://www.investing.com/commodities/aluminium", "Aluminium"),
     ]
     tasks = [
-        ("Coal from Barchart", parse_barchart_coal),
-        ("IDX Sector Indices", parse_yahoo_sector_indices),
-        ("JISDOR", parse_jisdor),
+        ("Coal from Barchart", parse_barchart_coal, ("Coal(Nwl)", "Coal(Rot)")),
+        ("IDX Sector Indices", parse_yahoo_sector_indices, IDX_SECTOR_KEYS),
+        ("JISDOR", parse_jisdor, ("Jisdor",)),
         (
             "Major Indices",
             lambda: parse_table_pages(
@@ -1211,6 +1278,7 @@ def collect_data():
                     ),
                 ]
             ),
+            MAJOR_INDEX_KEYS,
         ),
         (
             "IDX Indices",
@@ -1226,15 +1294,17 @@ def collect_data():
                     ),
                 ]
             ),
+            IDX_INDEX_KEYS,
         ),
-        ("SunSirs Woodpulp", parse_sunsirs_woodpulp),
-        ("Commodities", parse_commodities_futures),
+        ("SunSirs Woodpulp", parse_sunsirs_woodpulp, ("Woodpulp",)),
+        ("Commodities", parse_commodities_futures, COMMODITY_FUTURES_KEYS),
         *[
             (
                 label,
                 lambda url=url, label=label, code=code: parse_instrument_page(
                     url, label, code
                 ),
+                (code,),
             )
             for label, url, code in single_pages
         ],
@@ -1252,11 +1322,16 @@ def collect_data():
                     ),
                 ]
             ),
+            US_BOND_KEYS,
         ),
-        ("Indo Bonds", parse_indonesia_bonds),
-        ("PHEI (ICBI + Indo10Yr)", parse_phei),
+        ("Indo Bonds", parse_indonesia_bonds, ("Indo10Yr",)),
+        ("PHEI (ICBI + Indo10Yr)", parse_phei, ("ICBI", "Indo10Yr")),
         *[
-            (code, lambda ticker=ticker, code=code: parse_yahoo_finance(ticker, code))
+            (
+                code,
+                lambda ticker=ticker, code=code: parse_yahoo_finance(ticker, code),
+                (code,),
+            )
             for ticker, code in [
                 ("^VIX", "VIX"),
                 ("EIDO", "EIDO"),
@@ -1266,30 +1341,49 @@ def collect_data():
                 ("HG%3DF", "Copper"),
             ]
         ],
-        ("DXY Yahoo API", parse_yahoo_dxy),
-        ("IndoCDS", parse_indonesia_cds),
-        ("Ammonia", parse_ammonia),
-        ("IDX Property", parse_yahoo_idx_property),
-        ("Bursa CPO", parse_bursa_cpo),
+        ("DXY Yahoo API", parse_yahoo_dxy, ("USDIndx",)),
+        ("IndoCDS", parse_indonesia_cds, ("IndoCDS 5yr",)),
+        ("Ammonia", parse_ammonia, ("Ammonia",)),
+        ("IDX Property", parse_yahoo_idx_property, ("IDX Property",)),
+        ("Bursa CPO", parse_bursa_cpo, ("CPO",)),
     ]
 
-    log(f"Submitting {len(tasks)} scraper tasks with {MAX_FETCH_WORKERS} workers...")
     results_by_index = {}
-    with ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS) as executor:
-        futures = {
-            executor.submit(run_task, label, fn): idx
-            for idx, (label, fn) in enumerate(tasks)
-        }
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                res = future.result()
-            except Exception as e:
-                res = {}
-                log(f"  WARN task {idx}: {type(e).__name__}: {str(e)[:80]}")
-            results_by_index[idx] = res
-            label = tasks[idx][0]
-            log(f"  done: {label}")
+    tasks_to_run = []
+    cached_task_count = 0
+    for idx, (label, fn, expected_keys) in enumerate(tasks):
+        cached_results = fresh_cached_results(expected_keys)
+        if expected_keys and len(cached_results) == len(expected_keys):
+            results_by_index[idx] = cached_results
+            cached_task_count += 1
+            log(f"  cached: {label}")
+            continue
+        tasks_to_run.append((idx, label, fn))
+
+    if tasks_to_run:
+        log(
+            f"Submitting {len(tasks_to_run)} scraper tasks with "
+            f"{MAX_FETCH_WORKERS} workers..."
+        )
+        if cached_task_count:
+            log(f"Using cache for {cached_task_count} scraper tasks.")
+        with ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS) as executor:
+            futures = {
+                executor.submit(run_task, label, fn): idx
+                for idx, label, fn in tasks_to_run
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    res = future.result()
+                except Exception as e:
+                    res = {}
+                    log(f"  WARN task {idx}: {type(e).__name__}: {str(e)[:80]}")
+                results_by_index[idx] = res
+                label = tasks[idx][0]
+                log(f"  done: {label}")
+    else:
+        log(f"All {len(tasks)} scraper tasks satisfied from cache.")
 
     for idx in range(len(tasks)):
         DATA.update(results_by_index.get(idx, {}))

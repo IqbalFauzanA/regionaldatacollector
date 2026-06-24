@@ -10,10 +10,13 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
 
 from regional_report.commons import CACHE_DIR, CACHE_JSON, OUTPUT_DIR, REPORT_WA
-from regional_report.commons import is_valid_data
+from regional_report.commons import (
+    is_recent_cached_item,
+    is_valid_data,
+    normalize_cached_item_timestamp,
+)
 from regional_report.exports import save_report_exports
 from regional_report.formatters import format_report, format_report_whatsapp
 from regional_report.parsers import collect_data, fetch_market_news
@@ -40,22 +43,6 @@ def _load_cache():
         return None
 
 
-def _is_recent_cached_item(cache_raw, cached_item, now_ts, max_age_seconds=3600):
-    if not isinstance(cached_item, dict) or not is_valid_data(cached_item):
-        return False
-
-    fetched_at = cached_item.get("fetched_at") or cache_raw.get("timestamp")
-    if not fetched_at:
-        return False
-
-    try:
-        then = datetime.fromisoformat(str(fetched_at))
-        now = datetime.now(then.tzinfo) if then.tzinfo else now_ts
-        return (now - then).total_seconds() <= max_age_seconds
-    except Exception:
-        return False
-
-
 def _merge_partial_cache(cache_raw, data, sources, timestamp):
     raw_out = {
         "timestamp": timestamp,
@@ -68,8 +55,6 @@ def _merge_partial_cache(cache_raw, data, sources, timestamp):
     cached_data = cache_raw.get("data", {})
     merged = {}
     used_cached = False
-    now_ts = datetime.now()
-
     ordered_keys = list(data) + [key for key in cached_data if key not in data]
     for key in ordered_keys:
         value = data.get(key)
@@ -78,8 +63,8 @@ def _merge_partial_cache(cache_raw, data, sources, timestamp):
             continue
 
         cached_item = cached_data.get(key)
-        if _is_recent_cached_item(cache_raw, cached_item, now_ts):
-            merged[key] = cached_item
+        if is_recent_cached_item(cache_raw, cached_item):
+            merged[key] = normalize_cached_item_timestamp(cache_raw, cached_item)
             used_cached = True
         elif key in data:
             merged[key] = value
@@ -139,7 +124,9 @@ def main(argv=None):
         sources = cache_raw.get("sources_used", [])
         timestamp = cache_raw.get("timestamp", "")
     else:
-        data, sources, timestamp = collect_data()
+        data, sources, timestamp = collect_data(
+            cache_raw=cache_raw if partial_cache_mode else None
+        )
         if partial_cache_mode:
             raw_out = _merge_partial_cache(cache_raw, data, sources, timestamp)
         else:
