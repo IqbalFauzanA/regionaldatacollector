@@ -212,18 +212,47 @@ def parse_phei():
             if container:
                 text = container.get_text("|", strip=True)
                 parts = text.split("|")
-                # Expected: ICBI|▲|426.4080|Previous|425.7156|Change|0.6925|Change (%)|0.16
+                # Expected: ICBI|arrow|426.4080|Previous|425.7156|Change|0.6925|Change (%)|0.16
+                # PHEI displays Change as an unsigned magnitude and uses the
+                # arrow/color for direction, so compute the signed value from
+                # the current and previous levels.
                 if len(parts) >= 9:
-                    close = parts[2]
-                    prev = parts[4]
-                    chg = parts[6]
-                    pct = parts[8]
-                    result["ICBI"] = {
-                        "close": close,
-                        "change": chg,
-                        "change_pct": f"{pct}%",
-                        "source": "PHEI",
-                    }
+                    close_raw = parts[2]
+                    prev_raw = parts[4]
+                    chg_raw = parts[6]
+                    pct_raw = parts[8]
+
+                    def _to_float(value):
+                        cleaned = clean_num(str(value).replace("%", ""))
+                        if cleaned is None:
+                            return None
+                        return float(cleaned)
+
+                    try:
+                        close_num = _to_float(close_raw)
+                        prev_num = _to_float(prev_raw)
+                    except (ValueError, TypeError):
+                        close_num = None
+                        prev_num = None
+
+                    if close_num is not None and prev_num is not None:
+                        chg_num = round(close_num - prev_num, 4)
+                        if abs(chg_num) < 0.00005:
+                            chg_num = 0.0
+                        pct_num = round((chg_num / prev_num) * 100, 2) if prev_num else 0.0
+                        result["ICBI"] = {
+                            "close": f"{close_num:.4f}",
+                            "change": f"{chg_num:+.4f}",
+                            "change_pct": f"{pct_num:+.2f}%",
+                            "source": "PHEI",
+                        }
+                    else:
+                        result["ICBI"] = {
+                            "close": close_raw,
+                            "change": clean_num(chg_raw),
+                            "change_pct": f"{clean_num(pct_raw)}%",
+                            "source": "PHEI",
+                        }
 
         # ── Indo10Yr from IGSYC table ──
         tables = bs.find_all("table")
