@@ -73,7 +73,7 @@ Run commands from the project root.
 | `python regional_market_report.py` | Fresh scrape, formatted report, cache update, PDF export |
 | `python regional_market_report.py --from-cache` | Reformat the latest cached data without scraping |
 | `python regional_market_report.py --json-only` | Print raw JSON for debugging or downstream processing |
-| `python regional_market_report.py --partial-cache` | Merge fresh valid data with recently cached values when a source fails |
+| `python regional_market_report.py --partial-cache` | Reuse fresh valid cache first, then scrape only stale or invalid items |
 | `python regional_market_report.py --debug` | Show debug logging while scraping |
 
 Recommended Windows command:
@@ -184,9 +184,9 @@ dist\regional_market_report.exe
 ```
 
 When running as an EXE, the app resolves `cache\` and `output\` beside the EXE
-when possible. It also enables partial-cache behavior by default, so a temporary
-source failure can reuse recently cached values instead of producing a sparse
-report.
+when possible. It also enables partial-cache behavior by default, so fresh valid
+cached values are reused without fetching and temporary source failures can fall
+back to recently cached values instead of producing a sparse report.
 
 ---
 
@@ -227,8 +227,8 @@ and the modules under `regional_report\`.
 - `curl_cffi` is preferred for modern TLS and browser impersonation; the code
   falls back to `requests` when needed in development.
 - Per-host concurrency limits are used to avoid overwhelming source sites.
-- Cache fallback is intentionally conservative: cached values are reused only
-  when the current item is invalid and the cached item is recent enough.
+- Partial-cache reuse is intentionally conservative: cached values are reused
+  only when the cached item is valid and has a recent parseable timestamp.
 
 ---
 
