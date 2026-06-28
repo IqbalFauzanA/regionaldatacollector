@@ -222,18 +222,22 @@ def fetch(
 def strip_preview_emoji(s: str) -> str:
     """Remove common emoji and preview markers from a string for PDF/HTML output.
 
-    This is intentionally conservative — it removes obvious emoji codepoints and
-    falls back to stripping non-ASCII characters if the regex engine can't handle
-    high Unicode ranges on this Python build.
+    Remove the whole emoji sequence, including invisible presentation selectors.
+    Leaving U+FE0F or U+200D behind makes ReportLab render stray ZapfDingbats
+    glyphs (commonly visible as ``n``) even when the emoji itself was removed.
     """
     if not isinstance(s, str):
         return s
     try:
-        # Also strip regional indicator symbols (U+1F1E6-U+1F1FF) which form
-        # flag emoji like 🇺🇸 — ReportLab fonts cannot render these and they
-        # appear as small square boxes in PDFs. Keep the regex conservative.
         return re.sub(
-            r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E6-\U0001F1FF\u2600-\u27BF\U0001F900-\U0001F9FF]",
+            r"["
+            r"\u200D\u203C\u2049\u20E3\u2122\u2139"
+            r"\u2190-\u21FF\u2300-\u23FF\u2460-\u25FF\u2600-\u27BF"
+            r"\u2934-\u2935\u2B00-\u2BFF\u3030\u303D\u3297\u3299"
+            r"\uFE0E\uFE0F"
+            r"\U0001F000-\U0001FAFF"
+            r"\U000E0020-\U000E007F"
+            r"]",
             "",
             s,
         )
