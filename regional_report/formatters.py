@@ -30,7 +30,7 @@ def get_change(d):
             )
             if pct_num > 50:
                 return ""
-        except (ValueError, ZeroDivisionError):
+        except ValueError:
             pass
 
         s = str(pct).strip()
@@ -99,10 +99,7 @@ def fmt(
 def decorate_value(d, base=None):
     """Bold large movers using the normalized percent change."""
     if base is None:
-        try:
-            base = fmt(d, suppress_bad_point=True) if isinstance(d, dict) else str(d)
-        except Exception:
-            base = str(d) if d is not None else ""
+        base = fmt(d, suppress_bad_point=True) if isinstance(d, dict) else str(d)
 
     base = str(base).strip()
     if not base:
@@ -114,7 +111,7 @@ def decorate_value(d, base=None):
 
     try:
         abs_pct = abs(float(str(pct).replace("%", "").replace("+", "").replace(",", "")))
-    except Exception:
+    except ValueError:
         return base
 
     if abs_pct > 3.0:
@@ -134,7 +131,8 @@ def _tlkm_idr_equivalent(data):
     if tlkm <= 0 or jisdor <= 0:
         return None
 
-    converted = tlkm * jisdor / 20 / 2 / 5 * 2
+    # One TLKM ADR represents 100 local shares.
+    converted = tlkm * jisdor / 100
     return int(converted + 0.5)
 
 
@@ -193,16 +191,17 @@ def format_report(data, market_news=None):
     lines.append("---")
     lines.append("")
 
-    news = market_news or []
+    news = [
+        item
+        for item in (market_news or [])
+        if isinstance(item, dict) and item.get("title") and item.get("url")
+    ]
     if news:
         lines.append("## \U0001f4f0 Market News Summary")
         lines.append("")
         lines.append("### Top Market News")
         for item in news:
-            title = item.get("title") if isinstance(item, dict) else None
-            url = item.get("url") if isinstance(item, dict) else None
-            if title and url:
-                lines.append(f"- [{title}]({url})")
+            lines.append(f"- [{item['title']}]({item['url']})")
         lines.append("")
 
     lines.append("---")

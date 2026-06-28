@@ -37,7 +37,6 @@ Python packages are listed in `requirements.txt`:
 | `curl_cffi` | HTTP requests with browser impersonation |
 | `beautifulsoup4` | HTML parsing |
 | `lxml` | XML/HTML parser |
-| `pillow` | Image/font support used by exports |
 | `reportlab` | PDF export |
 | `pyinstaller` | Windows EXE build |
 
@@ -228,8 +227,7 @@ and the modules under `regional_report\`.
 - SunSirs supplies the daily China liquid-ammonia price and recent history.
 - Yahoo Finance and Investing-style pages supply many index, FX, ETF, stock,
   commodity, and rates values.
-- `curl_cffi` is preferred for modern TLS and browser impersonation; the code
-  falls back to `requests` when needed in development.
+- `curl_cffi` provides modern TLS handling and browser impersonation.
 - Per-host concurrency limits are used to avoid overwhelming source sites.
 - Partial-cache reuse is intentionally conservative: cached values are reused
   only when the cached item is valid and has a recent parseable timestamp.
@@ -254,7 +252,7 @@ and the modules under `regional_report\`.
 | --- | --- |
 | Report has missing rows | Run with `--debug`, then retry with `--partial-cache` |
 | Telegram text includes progress logs | Read `output\regional_report_whatsapp.txt` instead of stdout |
-| PDF export fails | Confirm `reportlab` and `pillow` are installed |
+| PDF export fails | Confirm `reportlab` is installed |
 | EXE writes files in the wrong folder | Run it from the intended working directory or place it in the target folder |
 | Cached report is stale | Run without `--from-cache` to scrape fresh data |
 

@@ -40,10 +40,7 @@ def parse_barchart_price_change(price_raw, chg_raw):
         m = re.search(r"[-+]?\d{1,3}(?:[\d,]*\d)?(?:\.\d+)?", x)
         if not m:
             return None
-        try:
-            return float(m.group(0).replace(",", ""))
-        except Exception:
-            return None
+        return float(m.group(0).replace(",", ""))
 
     price = _find_num(price_raw)
 
@@ -68,10 +65,7 @@ def parse_barchart_price_change(price_raw, chg_raw):
             chg_num = 0.0
 
         prev_close = price - chg_num
-        try:
-            pct = round((chg_num / prev_close) * 100, 2) if prev_close else 0.0
-        except Exception:
-            pct = 0.0
+        pct = round((chg_num / prev_close) * 100, 2) if prev_close else 0.0
 
         price_str = f"{price:.2f}"
         change_str = f"{chg_num:+.2f}" if chg_num is not None else None
@@ -133,7 +127,6 @@ def code_from_name(name):
         "set": "SET",
         "taiwan weighted": "Taiwan Weighted",
         "smi": "SMI",
-        "ftse mib": "FTSE MIB",
     }
     key = name.lower().strip()
     if key in mapping:
@@ -328,13 +321,15 @@ def parse_commodities_futures():
 
             name_idx = find_header_index(
                 ["name", "contract", "commodity", "instrument", "symbol"]
-            ) or (1 if len(header_cells) > 1 else 0)
-            last_idx = (
-                find_header_index(["last", "price", "close"])
-                or find_header_index(["ltd"])
-                or 3
             )
-            chg_idx = find_header_index(["change", "chg"]) or None
+            if name_idx is None:
+                name_idx = 1 if len(header_cells) > 1 else 0
+            last_idx = find_header_index(["last", "price", "close"])
+            if last_idx is None:
+                last_idx = find_header_index(["ltd"])
+            if last_idx is None:
+                last_idx = 3
+            chg_idx = find_header_index(["change", "chg"])
             pct_idx = find_header_index(["%", "change (%)", "chg%", "change%", "ch%"])
 
             def _normalize_name(n: str) -> str:
@@ -370,19 +365,19 @@ def parse_commodities_futures():
                 # find the best matching wanted key (robust substring/word match)
                 matched_key = None
                 name_l = name_norm.lower()
-                for wk in wanted.keys():
+                for wk in wanted:
                     if wk.lower() == name_l:
                         matched_key = wk
                         break
                 if not matched_key:
-                    for wk in wanted.keys():
+                    for wk in wanted:
                         if wk.lower() in name_l or name_l in wk.lower():
                             matched_key = wk
                             break
                 if not matched_key:
                     # token overlap (require at least 3-char token to avoid spurious matches)
                     tokens = re.findall(r"\w{3,}", name_l)
-                    for wk in wanted.keys():
+                    for wk in wanted:
                         wk_l = wk.lower()
                         for t in tokens:
                             if t in wk_l:
@@ -453,61 +448,35 @@ def parse_commodities_futures():
                     "change_pct": pct_txt,
                     "source": "Investing Futures",
                 }
-            # If some wanted items were not found in the tables (Investing may
-            # render them via different tables or separate instrument pages),
-            # attempt fallback to their instrument pages.
-            missing_codes = [c for c in wanted.values() if c not in results]
-            if missing_codes:
-                fallback_urls = {
-                    "Oil(WT)": [
-                        "https://www.investing.com/commodities/crude-oil",
-                        "https://www.investing.com/commodities/crude-oil-wti",
-                    ],
-                    "Oil(Brn)": [
-                        "https://www.investing.com/commodities/brent-oil",
-                        "https://www.investing.com/commodities/brent-oil-futures",
-                    ],
-                    "Ntrl Gas": [
-                        "https://www.investing.com/commodities/natural-gas",
-                        "https://www.investing.com/commodities/natural-gas-futures",
-                    ],
-                    "Aluminium": [
-                        "https://www.investing.com/commodities/aluminium",
-                        "https://www.investing.com/commodities/aluminum",
-                    ],
-                    "Nickel": [
-                        "https://www.investing.com/commodities/nickel",
-                    ],
-                }
-                for code in missing_codes:
-                    urls = fallback_urls.get(code, [])
-                    for url in urls:
-                        try:
-                            logger.debug(
-                                "Commodities: fallback try %s for code %s", url, code
-                            )
-                            parsed = parse_instrument_page(
-                                url, "Investing Futures", code
-                            )
-                            if parsed and isinstance(parsed, dict) and parsed.get(code):
-                                val = parsed.get(code)
-                                logger.debug(
-                                    "Commodities: fallback parsed for %s: %s",
-                                    code,
-                                    bool(val),
-                                )
-                                if is_valid_data(val):
-                                    results[code] = val
-                                    break
-                        except Exception as e:
-                            logger.warning(
-                                "Commodities fallback %s: %s: %s",
-                                url,
-                                type(e).__name__,
-                                str(e)[:80],
-                            )
-                            # ignore and try next fallback URL
-                            continue
+        # Only fall back after every table has been searched. Doing this inside
+        # the table loop repeated the same network requests for multi-table pages.
+        fallback_urls = {
+            "Oil(WT)": [
+                "https://www.investing.com/commodities/crude-oil",
+                "https://www.investing.com/commodities/crude-oil-wti",
+            ],
+            "Oil(Brn)": [
+                "https://www.investing.com/commodities/brent-oil",
+                "https://www.investing.com/commodities/brent-oil-futures",
+            ],
+            "Ntrl Gas": [
+                "https://www.investing.com/commodities/natural-gas",
+                "https://www.investing.com/commodities/natural-gas-futures",
+            ],
+            "Aluminium": [
+                "https://www.investing.com/commodities/aluminium",
+                "https://www.investing.com/commodities/aluminum",
+            ],
+            "Nickel": ["https://www.investing.com/commodities/nickel"],
+        }
+        for code in (code for code in wanted.values() if code not in results):
+            for url in fallback_urls[code]:
+                logger.debug("Commodities: fallback try %s for code %s", url, code)
+                parsed = parse_instrument_page(url, "Investing Futures", code)
+                value = parsed.get(code)
+                if is_valid_data(value):
+                    results[code] = value
+                    break
     except Exception as e:
         print(f"  WARN Commodities: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
     return results
@@ -873,7 +842,6 @@ def parse_yahoo_sector_indices():
         ("IDX Infra", "IDXINFRA.JK"),
         ("IDX Finance", "IDXFINANCE.JK"),
         ("IDX Banking", "INFOBANK15.JK"),
-        ("IDX Property", "IDXPROPERT.JK"),
     ]
     for name, ticker in sectors:
         try:
@@ -1386,7 +1354,6 @@ IDX_SECTOR_KEYS = (
     "IDX Infra",
     "IDX Finance",
     "IDX Banking",
-    "IDX Property",
 )
 COMMODITY_FUTURES_KEYS = (
     "Oil(WT)",
@@ -1468,16 +1435,6 @@ def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
             "https://www.investing.com/indices/bloomberg-industrial-metals",
             "BCOMIN",
         ),
-        # Additional direct instrument pages to ensure key commodities are fetched
-        ("Crude Oil WTI", "https://www.investing.com/commodities/crude-oil", "Oil(WT)"),
-        ("Brent Oil", "https://www.investing.com/commodities/brent-oil", "Oil(Brn)"),
-        (
-            "Natural Gas",
-            "https://www.investing.com/commodities/natural-gas",
-            "Ntrl Gas",
-        ),
-        ("Nickel", "https://www.investing.com/commodities/nickel", "Nickel"),
-        ("Aluminium", "https://www.investing.com/commodities/aluminium", "Aluminium"),
     ]
     tasks = [
         ("Coal from Barchart", parse_barchart_coal, ("Coal(Nwl)", "Coal(Rot)")),
@@ -1566,7 +1523,6 @@ def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
                 (code,),
             )
             for ticker, code in [
-                ("^VIX", "VIX"),
                 ("EIDO", "EIDO"),
                 ("EEM", "EEM"),
                 ("TLK", "TLKM"),

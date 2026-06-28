@@ -3,7 +3,7 @@
 import html
 import os
 import re
-import sys
+from functools import lru_cache
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -16,6 +16,7 @@ from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
 from .commons import BASE_DIR, OUTPUT_DIR, REPORT_PDF, strip_preview_emoji
 
 
+@lru_cache(maxsize=1)
 def reportlab_font() -> str:
     """Return the registered base font name used for body text in PDFs.
 
@@ -32,6 +33,7 @@ def reportlab_font() -> str:
     return "Helvetica"
 
 
+@lru_cache(maxsize=1)
 def reportlab_bold_font() -> str:
     """Return the registered bold font name for PDFs (fallback to Helvetica-Bold)."""
     try:
@@ -90,37 +92,7 @@ def markdown_inline_to_reportlab(text: str) -> str:
     return escaped
 
 
-def _clean_placeholders_for_pdf(s: str) -> str:
-    """Remove leftover placeholder tokens that may appear verbatim in PDFs.
-
-    This strips common markers produced during earlier markdown processing
-    (e.g. __B_OPEN__, _BOPEN_, BCLOSE__, etc.) so the Paragraph text is
-    rendered cleanly. Keep this conservative and run after inline->ReportLab
-    conversion so legitimate `<b>`/`<i>` tags are preserved.
-    """
-    if not s:
-        return s
-    # remove explicit placeholder tokens
-    s = re.sub(r"__B_OPEN__|__B_CLOSE__|__I_OPEN__|__I_CLOSE__", "", s)
-    s = re.sub(r"_BOPEN_|BCLOSE__|_BOPEN|CLOSE__", "", s)
-    # remove fragments like '(_B) (OPEN)' that can appear when PDF text is
-    # split into multiple drawing operations
-    s = re.sub(r"\(?_?B_?\)?\s*\(?OPEN\)?", "", s)
-    s = re.sub(r"\(?CLOSE_+__?\)?", "", s)
-    # collapse remaining multiple underscores
-    s = re.sub(r"_+", "", s)
-    return s
-
-
 def save_report_pdf(report):
-    if SimpleDocTemplate is None:
-        print(
-            "[PDF export skipped: reportlab is not installed.]",
-            file=sys.stderr,
-            flush=True,
-        )
-        return None
-
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     body_font = reportlab_font()
     bold_font = reportlab_bold_font()
@@ -202,7 +174,6 @@ def save_report_pdf(report):
         if heading:
             level = min(len(heading.group(1)), 3)
             txt = markdown_inline_to_reportlab(heading.group(2))
-            txt = _clean_placeholders_for_pdf(txt)
             story.append(Paragraph(txt, styles[f"h{level}"]))
             continue
 
@@ -220,7 +191,6 @@ def save_report_pdf(report):
                     spaceAfter=1,
                 )
             txt = markdown_inline_to_reportlab(bullet.group(2))
-            txt = _clean_placeholders_for_pdf(txt)
             story.append(Paragraph(txt, bullet_styles[level], bulletText="\u2022"))
             continue
 
@@ -230,7 +200,6 @@ def save_report_pdf(report):
             else styles["body"]
         )
         txt = markdown_inline_to_reportlab(stripped)
-        txt = _clean_placeholders_for_pdf(txt)
         story.append(Paragraph(txt, style))
 
     doc = SimpleDocTemplate(
@@ -247,11 +216,4 @@ def save_report_pdf(report):
 
 
 def save_report_exports(report):
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    exports = []
-
-    pdf_path = save_report_pdf(report)
-    if pdf_path:
-        exports.append(pdf_path)
-
-    return exports
+    return [save_report_pdf(report)]

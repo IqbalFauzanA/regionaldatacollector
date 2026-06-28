@@ -42,8 +42,10 @@ def _load_cache():
         return None
     try:
         with open(CACHE_JSON, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+            cache = json.load(f)
+        return cache if isinstance(cache, dict) else None
+    except (OSError, json.JSONDecodeError):
+        logger.debug("Ignoring unreadable cache", exc_info=True)
         return None
 
 
@@ -53,7 +55,7 @@ def _merge_partial_cache(cache_raw, data, sources, timestamp):
         "data": data,
         "sources_used": sources,
     }
-    if not cache_raw or not isinstance(cache_raw.get("data"), dict):
+    if not isinstance(cache_raw, dict) or not isinstance(cache_raw.get("data"), dict):
         return raw_out
 
     cached_data = cache_raw.get("data", {})

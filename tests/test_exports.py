@@ -26,6 +26,17 @@ class PdfTextSanitizerTests(unittest.TestCase):
         )
         self.assertNotIn("\ufe0f", converted)
 
+    def test_pdf_inline_markup_preserves_literal_underscores(self):
+        converted = markdown_inline_to_reportlab(
+            "metric_name and [source_name](https://example.com/a_b)"
+        )
+
+        self.assertEqual(
+            converted,
+            'metric_name and <link href="https://example.com/a_b" '
+            'color="blue"><u>source_name</u></link>',
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

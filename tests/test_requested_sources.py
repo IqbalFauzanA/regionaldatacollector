@@ -12,11 +12,13 @@ from regional_report.parsers import (
     parse_bloomberg_quote_html,
     parse_bloomberg_usdidr_html,
     parse_bursa_cpo_payload,
+    parse_commodities_futures,
     parse_instrument_page,
     parse_ammonia,
     parse_indonesia_cds_payload,
     parse_jisdor,
     parse_sunsirs_woodpulp,
+    parse_yahoo_sector_indices,
     REQUESTED_SOURCE_BY_KEY,
 )
 
@@ -184,6 +186,34 @@ class RequestedSourceParserTests(unittest.TestCase):
         self.assertEqual(item["change"], "+9.00")
         self.assertEqual(item["contract"], "Sep 2026")
 
+    def test_commodity_fallback_runs_only_after_all_tables_are_searched(self):
+        html = """
+            <table>
+              <tr><th>Name</th><th>Last</th><th>Change</th><th>Change %</th></tr>
+              <tr><td>Crude Oil WTI</td><td>70.00</td><td>+1.00</td><td>+1.45%</td></tr>
+              <tr><td>Brent Oil</td><td>75.00</td><td>+1.00</td><td>+1.35%</td></tr>
+            </table>
+            <table>
+              <tr><th>Name</th><th>Last</th><th>Change</th><th>Change %</th></tr>
+              <tr><td>Natural Gas</td><td>3.00</td><td>+0.10</td><td>+3.45%</td></tr>
+              <tr><td>Aluminium</td><td>2500.00</td><td>+5.00</td><td>+0.20%</td></tr>
+              <tr><td>Nickel</td><td>15000.00</td><td>-5.00</td><td>-0.03%</td></tr>
+            </table>
+        """
+        with (
+            patch(
+                "regional_report.parsers.fetch",
+                return_value=SimpleNamespace(text=html),
+            ),
+            patch("regional_report.parsers.parse_instrument_page") as fallback,
+        ):
+            result = parse_commodities_futures()
+
+        self.assertEqual(
+            set(result), {"Oil(WT)", "Oil(Brn)", "Ntrl Gas", "Aluminium", "Nickel"}
+        )
+        fallback.assert_not_called()
+
     def test_kospi_50_is_authoritative_kospi_source(self):
         payload = {
             "props": {
@@ -290,6 +320,20 @@ class RequestedSourceParserTests(unittest.TestCase):
         self.assertIn("- **Woodpulp:** 4783.33 +0.00 +0.00%", report)
         self.assertIn("- **Ammonia:** 2340.00 +0.00 +0.00%", report)
         self.assertNotIn("SunSirs (06/28)", report)
+
+    def test_invalid_market_news_does_not_create_empty_section(self):
+        report = format_report({}, market_news=[{}, {"title": "Missing URL"}])
+
+        self.assertNotIn("Market News Summary", report)
+
+    def test_idx_property_is_not_fetched_twice(self):
+        with patch(
+            "regional_report.parsers.parse_yahoo_finance", return_value={}
+        ) as yahoo:
+            parse_yahoo_sector_indices()
+
+        requested_codes = [call.args[1] for call in yahoo.call_args_list]
+        self.assertNotIn("IDX Property", requested_codes)
 
     def test_indonesia_cds_uses_previous_daily_quote(self):
         payload = {

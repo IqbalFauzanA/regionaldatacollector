@@ -10,49 +10,9 @@ from threading import BoundedSemaphore
 from typing import Any, cast
 from urllib.parse import urlparse
 
+import curl_cffi.requests as req
+
 logger = logging.getLogger(__name__)
-
-# Prefer curl_cffi for faster, modern TLS handling. Fall back to requests
-# when curl_cffi isn't installed (useful in dev environments).
-try:
-    import curl_cffi.requests as req
-except Exception:
-    import requests as _requests
-
-    class _ReqAdapter:
-        def __init__(self):
-            self._session = _requests.Session()
-
-        def get(self, url, impersonate=None, timeout=15, headers=None, **kwargs):
-            hdrs = dict(headers or {})
-            if impersonate and "User-Agent" not in hdrs:
-                hdrs["User-Agent"] = (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-            return self._session.get(url, timeout=timeout, headers=hdrs, **kwargs)
-
-        def post(
-            self,
-            url,
-            data=None,
-            json=None,
-            impersonate=None,
-            timeout=15,
-            headers=None,
-            **kwargs,
-        ):
-            hdrs = dict(headers or {})
-            if impersonate and "User-Agent" not in hdrs:
-                hdrs["User-Agent"] = (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-            return self._session.post(
-                url, data=data, json=json, timeout=timeout, headers=hdrs, **kwargs
-            )
-
-    req = _ReqAdapter()
 
 
 MAX_FETCH_WORKERS = 8
@@ -74,11 +34,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
 }
-ZH_HEADERS = {
-    "User-Agent": HEADERS["User-Agent"],
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-}
-
 HOST_LIMITS = {
     "www.investing.com": 3,
     "query1.finance.yahoo.com": 4,
@@ -149,12 +104,10 @@ def fetch(
     retry_count = max_retries if max_retries is not None else len(impersonations)
 
     for attempt in range(retry_count):
-        sem.acquire()
+        retry_delay = None
         try:
-            try:
+            with sem:
                 chosen_imp = impersonations[attempt % len(impersonations)]
-                # debug trace for impersonation attempts
-                # Note: keep lightweight to avoid noisy logs
                 logger.debug(
                     "fetch attempt=%d impersonate=%s url=%s", attempt, chosen_imp, url
                 )
@@ -199,20 +152,17 @@ def fetch(
                     except Exception as e:
                         last_exc = e
 
-                    # longer backoff for anti-bot cases before retrying
-                    time.sleep(2 + attempt * 2)
-                    continue
+                    retry_delay = 2 + attempt * 2
+                else:
+                    return resp
 
-                return resp
-            except Exception as e:
-                last_exc = e
-                time.sleep(0.5 * (attempt + 1))
-                continue
-        finally:
-            try:
-                sem.release()
-            except Exception:
-                pass
+        except Exception as e:
+            last_exc = e
+            retry_delay = 0.5 * (attempt + 1)
+
+        # Do not hold a host slot while backing off; another task may succeed.
+        if retry_delay is not None and attempt + 1 < retry_count:
+            time.sleep(retry_delay)
 
     if last_exc:
         raise last_exc
@@ -255,9 +205,6 @@ def has_css_class(element, cls: str) -> bool:
         return cls in (classes or [])
     except Exception:
         return False
-
-
-# PNG preview helpers removed — PNG export disabled per user request
 
 
 def clean_num(s):
