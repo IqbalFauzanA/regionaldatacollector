@@ -84,6 +84,7 @@ HOST_LIMITS = {
     "query1.finance.yahoo.com": 4,
     "finance.yahoo.com": 4,
     "www.barchart.com": 2,
+    "www.bloomberg.com": 1,
 }
 
 

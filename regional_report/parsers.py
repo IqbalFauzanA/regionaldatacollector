@@ -15,7 +15,6 @@ from .commons import (
     CACHE_MAX_AGE_SECONDS,
     MAX_FETCH_WORKERS,
     RETRY_IMPERSONATE,
-    ZH_HEADERS,
     clean_num,
     fetch,
     has_css_class,
@@ -301,15 +300,8 @@ def parse_commodities_futures():
         "Crude Oil WTI": "Oil(WT)",
         "Brent Oil": "Oil(Brn)",
         "Natural Gas": "Ntrl Gas",
-        "Gold": "Gold",
-        "Silver": "Silver",
-        "Copper": "Copper",
         "Aluminium": "Aluminium",
         "Nickel": "Nickel",
-        "Tin": "Timah",
-        "US Corn": "Corn",
-        "US Soybean Oil": "SoybeanOil",
-        "US Wheat": "Wheat",
     }
     try:
         resp = fetch("https://www.investing.com/commodities/real-time-futures")
@@ -524,6 +516,204 @@ def parse_commodities_futures():
 # ──────────────── STATE/JSON-BASED PARSERS ────────────────
 
 
+BLOOMBERG_USDIDR_URL = "https://www.bloomberg.com/quote/USDIDR:CUR"
+BLOOMBERG_DXY_URL = "https://www.bloomberg.com/quote/DXY:CUR"
+BLOOMBERG_EURUSD_URL = "https://www.bloomberg.com/quote/EURUSD:CUR"
+BLOOMBERG_TIN_URL = "https://www.bloomberg.com/quote/LMSNDS03:COM"
+BLOOMBERG_METALS_URL = (
+    "https://www.bloomberg.com/markets/commodities/futures/metals"
+)
+BLOOMBERG_AGRICULTURE_URL = (
+    "https://www.bloomberg.com/markets/commodities/futures/agriculture"
+)
+
+
+def _fetch_bloomberg_html(url):
+    """Use Bloomberg's currently supported browser profile and bounded retries."""
+    return fetch(
+        url,
+        impersonate="chrome",
+        timeout=20,
+        max_retries=2,
+    ).text
+
+
+def _next_data_page_props(html):
+    """Return pageProps from a Next.js page, or an empty dict."""
+    soup = BeautifulSoup(html, "lxml")
+    script = soup.find("script", id="__NEXT_DATA__")
+    if not script or not script.string:
+        return {}
+    try:
+        payload = json.loads(script.string)
+    except (TypeError, ValueError):
+        return {}
+    page_props = payload.get("props", {}).get("pageProps", {})
+    return page_props if isinstance(page_props, dict) else {}
+
+
+def _decimal(value, places=2, signed=False):
+    """Normalize a Bloomberg numeric value for report output."""
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(str(value).replace(",", "").replace("%", ""))
+    except (TypeError, ValueError):
+        return ""
+    pattern = f"{{:{'+' if signed else ''}.{places}f}}"
+    return pattern.format(number)
+
+
+def _bloomberg_market_item(security):
+    if not isinstance(security, dict) or security.get("price") in (None, ""):
+        return None
+    return {
+        "close": clean_num(str(security["price"])),
+        "change": _decimal(security.get("priceChange1Day"), signed=True),
+        "change_pct": (
+            f"{_decimal(security.get('percentChange1Day'), signed=True)}%"
+            if security.get("percentChange1Day") is not None
+            else ""
+        ),
+        "source": "Bloomberg",
+        "ticker": security.get("id", ""),
+        "unit": security.get("commodityUnits") or security.get("issuedCurrency", ""),
+        "last_update": security.get("lastUpdate", ""),
+    }
+
+
+def parse_bloomberg_quote_html(html, ticker, code):
+    """Parse one Bloomberg quote page into the collector's data shape."""
+    quote = _next_data_page_props(html).get("quote", {})
+    if not isinstance(quote, dict) or quote.get("id") != ticker:
+        return {}
+    item = _bloomberg_market_item(quote)
+    return {code: item} if item else {}
+
+
+def parse_bloomberg_usdidr_html(html):
+    """Parse USD/IDR from Bloomberg's embedded quote payload."""
+    return parse_bloomberg_quote_html(html, "USDIDR:CUR", "IDR")
+
+
+def _parse_bloomberg_sections_html(html, wanted):
+    """Parse selected ticker rows from a Bloomberg section-front page."""
+    page_props = _next_data_page_props(html)
+    sections = (
+        page_props.get("sectionFront", {})
+        .get("sectionFrontTab", {})
+        .get("sections", [])
+    )
+    result = {}
+    if not isinstance(sections, list):
+        return result
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        for security in section.get("securities", []):
+            if not isinstance(security, dict):
+                continue
+            id = security.get("id")
+            if not isinstance(id, str):
+                continue
+            code = wanted.get(id)
+            if not code:
+                continue
+            item = _bloomberg_market_item(security)
+            if item:
+                result[code] = item
+    return result
+
+
+def parse_bloomberg_metals_html(html):
+    """Parse the requested rows from Bloomberg's embedded metals tables."""
+    return _parse_bloomberg_sections_html(
+        html,
+        {
+            "GC1:COM": "Gold",
+            "XAUUSD:CUR": "Gold(Spot)",
+            "SI1:COM": "Silver",
+            "HG1:COM": "Copper",
+        },
+    )
+
+
+def parse_bloomberg_agriculture_html(html):
+    """Parse Corn, Wheat, and Soybean Oil from Bloomberg agriculture."""
+    return _parse_bloomberg_sections_html(
+        html,
+        {
+            "C 1:COM": "Corn",
+            "W 1:COM": "Wheat",
+            "BO1:COM": "SoybeanOil",
+        },
+    )
+
+
+def parse_bloomberg_usdidr():
+    try:
+        return parse_bloomberg_usdidr_html(_fetch_bloomberg_html(BLOOMBERG_USDIDR_URL))
+    except Exception as e:
+        print(
+            f"  WARN Bloomberg USD/IDR: {type(e).__name__}: {str(e)[:60]}",
+            file=sys.stderr,
+        )
+        return {}
+
+
+def _parse_bloomberg_quote(url, ticker, code, label):
+    try:
+        return parse_bloomberg_quote_html(
+            _fetch_bloomberg_html(url), ticker, code
+        )
+    except Exception as e:
+        print(
+            f"  WARN Bloomberg {label}: {type(e).__name__}: {str(e)[:60]}",
+            file=sys.stderr,
+        )
+        return {}
+
+
+def parse_bloomberg_dxy():
+    return _parse_bloomberg_quote(BLOOMBERG_DXY_URL, "DXY:CUR", "USDIndx", "DXY")
+
+
+def parse_bloomberg_eurusd():
+    return _parse_bloomberg_quote(
+        BLOOMBERG_EURUSD_URL, "EURUSD:CUR", "Euro", "EUR/USD"
+    )
+
+
+def parse_bloomberg_tin():
+    return _parse_bloomberg_quote(
+        BLOOMBERG_TIN_URL, "LMSNDS03:COM", "Timah", "Tin"
+    )
+
+
+def parse_bloomberg_metals():
+    try:
+        return parse_bloomberg_metals_html(_fetch_bloomberg_html(BLOOMBERG_METALS_URL))
+    except Exception as e:
+        print(
+            f"  WARN Bloomberg metals: {type(e).__name__}: {str(e)[:60]}",
+            file=sys.stderr,
+        )
+        return {}
+
+
+def parse_bloomberg_agriculture():
+    try:
+        return parse_bloomberg_agriculture_html(
+            _fetch_bloomberg_html(BLOOMBERG_AGRICULTURE_URL)
+        )
+    except Exception as e:
+        print(
+            f"  WARN Bloomberg agriculture: {type(e).__name__}: {str(e)[:60]}",
+            file=sys.stderr,
+        )
+        return {}
+
+
 def parse_instrument_page(url, label, code_name):
     result = {}
     try:
@@ -730,8 +920,64 @@ def parse_indonesia_bonds():
 # ──────────────── CDS ────────────────
 
 
+def parse_indonesia_cds_payload(data):
+    """Calculate Indonesia 5Y CDS change from the latest two dated quotes."""
+    if not isinstance(data, dict) or not data.get("success"):
+        return {}
+    result = data.get("result", {})
+    quotes = result.get("quote", {}) if isinstance(result, dict) else {}
+    if not isinstance(quotes, dict):
+        return {}
+
+    # Keep the last observation for each date, then compare distinct dates.
+    by_date = {}
+    for quote in quotes.values():
+        if not isinstance(quote, dict):
+            continue
+        date = str(quote.get("DATA_VAL", "")).strip()
+        try:
+            close_val = quote.get("CLOSE_VAL")
+            if not isinstance(close_val, (int, float, str)):
+                continue
+            value = float(close_val)
+        except (TypeError, ValueError):
+            continue
+        if date:
+            by_date[date] = value
+    dates = sorted(by_date)
+    if not dates:
+        return {}
+
+    latest_date = dates[-1]
+    latest = by_date[latest_date]
+    close = str(result.get("ultimoValore") or f"{latest:.2f}")
+    change = ""
+    change_pct = ""
+    previous_close = ""
+    previous_date = ""
+    if len(dates) > 1:
+        previous_date = dates[-2]
+        previous = by_date[previous_date]
+        difference = latest - previous
+        percent = (difference / previous * 100) if previous else 0.0
+        previous_close = f"{previous:.4f}"
+        change = f"{difference:+.2f}"
+        change_pct = f"{percent:+.2f}%"
+
+    return {
+        "IndoCDS 5yr": {
+            "close": close,
+            "change": change,
+            "change_pct": change_pct,
+            "date": latest_date,
+            "previous_close": previous_close,
+            "previous_date": previous_date,
+            "source": "WorldGovernmentBonds",
+        }
+    }
+
+
 def parse_indonesia_cds():
-    result = {}
     try:
         payload = {
             "GLOBALVAR": {
@@ -771,100 +1017,71 @@ def parse_indonesia_cds():
             timeout=20,
         )
 
-        data = resp.json()
-        if not data.get("success"):
-            return result
-        r = data["result"]
-        close = str(r["ultimoValore"])
-        change = ""
-        change_pct = ""
-        html = r.get("htmlLatestChange", "")
-        if html:
-            soup = BeautifulSoup(html, "lxml")
-            for tr in soup.find_all("tr"):
-                cells = tr.find_all("td")
-                if len(cells) >= 5 and "1 Week" in cells[0].get_text(strip=True):
-                    min_div = cells[2].find("div")
-                    prev_val = min_div.get_text(strip=True) if min_div else ""
-                    if prev_val:
-                        try:
-                            curr = float(close)
-                            prev = float(prev_val)
-                            diff = round(curr - prev, 2)
-                            pc = round((diff / prev) * 100, 2) if prev != 0 else 0
-                            change = f"+{diff}" if diff >= 0 else str(diff)
-                            change_pct = f"+{pc}%" if pc >= 0 else f"{pc}%"
-                        except (ValueError, TypeError):
-                            change = cells[1].get_text(strip=True)
-                            change_pct = change
-                    break
-        result["IndoCDS 5yr"] = {
-            "close": close,
-            "change": change,
-            "change_pct": change_pct,
-            "source": "WorldGovernmentBonds",
-        }
+        return parse_indonesia_cds_payload(resp.json())
     except Exception as e:
         print(f"  WARN IndoCDS: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
-    return result
+        return {}
 
 
 # ──────────────── AMMONIA ────────────────
 
 
+SUNSIRS_AMMONIA_URL = (
+    "https://www.sunsirs.com/m/page/commodity-price-detail/"
+    "commodity-price-detail-965.html"
+)
+
+
+def parse_sunsirs_ammonia_html(html):
+    """Parse SunSirs' seven-day China liquid-ammonia price series."""
+    soup = BeautifulSoup(html, "lxml")
+    entries = []
+    for row in soup.select("li.zwd_table_li"):
+        cells = [item.get_text(" ", strip=True) for item in row.find_all("p")]
+        if len(cells) < 3 or cells[0].lower() != "liquid ammonia":
+            continue
+        try:
+            price = float(cells[1].replace(",", ""))
+        except ValueError:
+            continue
+        entries.append({"price": price, "date": cells[2]})
+
+    if not entries:
+        return {}
+    latest = entries[0]
+    change = ""
+    change_pct = ""
+    previous = next(
+        (entry for entry in entries[1:] if entry["date"] != latest["date"]),
+        None,
+    )
+    if previous:
+        previous_price = previous["price"]
+        difference = latest["price"] - previous_price
+        percent = (difference / previous_price * 100) if previous_price else 0.0
+        change = f"{difference:+.2f}"
+        change_pct = f"{percent:+.2f}%"
+
+    return {
+        "Ammonia": {
+            "close": f"{latest['price']:.2f}",
+            "change": change,
+            "change_pct": change_pct,
+            "date": latest["date"],
+            "previous_date": previous["date"] if previous else "",
+            "unit": "RMB/ton",
+            "note": f"SunSirs ({latest['date']})",
+            "source": "SunSirs",
+        }
+    }
+
+
 def parse_ammonia():
-    result = {}
     try:
-        resp = fetch(
-            "https://www.chemicalbook.com/PriceInfoall_CB9854275.htm",
-            headers=ZH_HEADERS,
-            timeout=15,
-        )
-        soup = BeautifulSoup(resp.text, "lxml")
-        entries = []
-        for li in soup.find_all("li"):
-            if has_css_class(li, "align_r"):
-                continue
-            txt = li.get_text(" ", strip=True)
-            m = re.search(r"(\d+月\d+日).*?氨.*?报价[:：]?(\d[\d,.]*)", txt)
-            if m:
-                entries.append(
-                    {
-                        "date": m.group(1),
-                        "price": m.group(2).replace(",", ""),
-                    }
-                )
-        if entries:
-            latest = entries[0]
-            close = latest["price"]
-            change = ""
-            change_pct = ""
-            if len(entries) >= 2:
-                prev = entries[1]
-                try:
-                    c = float(close)
-                    p = float(prev["price"])
-                    diff = round(c - p, 2)
-                    pc = round((diff / p) * 100, 2) if p != 0 else 0
-                    change = f"+{diff}" if diff >= 0 else str(diff)
-                    change_pct = f"+{pc}%" if pc >= 0 else f"{pc}%"
-                except (ValueError, TypeError):
-                    pass
-            result["Ammonia"] = {
-                "close": close,
-                "change": change,
-                "change_pct": change_pct,
-                "date": latest["date"],
-                "unit": "Yuan/ton",
-                "note": f"ChemicalBook ({entries[0]['date']})",
-                "source": "ChemicalBook",
-            }
+        return parse_sunsirs_ammonia_html(fetch(SUNSIRS_AMMONIA_URL, timeout=30).text)
     except Exception as e:
         print(f"  WARN Ammonia: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
-    return result
-
-
-# ──────────────── JISDOR ────────────────
+        return {}
 
 
 def parse_jisdor():
@@ -880,12 +1097,10 @@ def parse_jisdor():
             txt = td.get_text(strip=True)
             m = re.match(r"Rp(\d{2,3}\.\d{3})[,\s]", txt)
             if m:
-                rates.append(m.group(1).replace(".", ","))
+                rates.append(m.group(1).replace(".", ""))
         if len(rates) >= 2:
-            curr = rates[0].replace(",", "")
-            prev = rates[1].replace(",", "")
-            curr_f = float(curr)
-            prev_f = float(prev)
+            curr_f = float(rates[0])
+            prev_f = float(rates[1])
             change = round(curr_f - prev_f, 0)
             change_pct = round(((curr_f - prev_f) / prev_f) * 100, 2)
             result["Jisdor"] = {
@@ -903,43 +1118,6 @@ def parse_jisdor():
             }
     except Exception as e:
         print(f"  WARN JISDOR: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
-    return result
-
-
-# ──────────────── DXY from Yahoo Finance API ────────────────
-
-
-def parse_yahoo_dxy():
-    """Fetch DXY via Yahoo Finance v8 chart API (more reliable than HTML scraping)."""
-    result = {}
-    try:
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=1d"
-        resp = fetch(url, timeout=20)
-        data = resp.json()
-        meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
-        price = meta.get("regularMarketPrice")
-        prev_close = meta.get("chartPreviousClose")
-        if price and prev_close:
-            change = round(price - prev_close, 3)
-            pct = round(((price - prev_close) / prev_close) * 100, 2)
-            result["USDIndx"] = {
-                "close": str(price),
-                "change": f"{change:+.3f}",
-                "change_pct": f"{pct:+.2f}%",
-                "source": "Yahoo Finance API",
-            }
-        elif price:
-            result["USDIndx"] = {
-                "close": str(price),
-                "change": "",
-                "change_pct": "",
-                "source": "Yahoo Finance API",
-            }
-    except Exception as e:
-        print(
-            f"  WARN DXY (Yahoo API): {type(e).__name__}: {str(e)[:60]}",
-            file=sys.stderr,
-        )
     return result
 
 
@@ -983,22 +1161,45 @@ def parse_yahoo_idx_property():
 # ──────────────── BAR CHART COAL ────────────────
 
 
+_BARCHART_MONTH_CODES = (
+    "F", "G", "H", "J", "K", "M", "N", "Q", "U", "V", "X", "Z"
+)
+_MONTH_ABBREVIATIONS = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def _barchart_contract_months(as_of=None, count=4):
+    """Return consecutive Barchart contract months starting with this month."""
+    as_of = as_of or datetime.now()
+    start_index = as_of.month - 1
+    contracts = []
+    for offset in range(count):
+        absolute_index = start_index + offset
+        month_index = absolute_index % 12
+        year = as_of.year + absolute_index // 12
+        contracts.append(
+            (
+                _MONTH_ABBREVIATIONS[month_index],
+                _BARCHART_MONTH_CODES[month_index],
+                year % 100,
+            )
+        )
+    return contracts
+
+
 def parse_barchart_coal():
     result = {}
-    month_codes = {
-        "Jun": "M",
-        "Jul": "N",
-        "Aug": "Q",
-        "Sep": "U",
-    }
+    contract_months = _barchart_contract_months()
 
     for root_name, root_sym, label in [
         ("Newcastle", "LQ", "Coal(Nwl)"),
         ("Rotterdam", "LU", "Coal(Rot)"),
     ]:
         contracts = []
-        for month_name, code in month_codes.items():
-            sym = f"{root_sym}{code}26"
+        for month_name, code, contract_year in contract_months:
+            sym = f"{root_sym}{code}{contract_year:02d}"
 
             found_row = False
             try:
@@ -1055,49 +1256,52 @@ def parse_barchart_coal():
 
 
 def parse_bursa_cpo():
-    """FCPO from Bursa Malaysia derivatives market table, row 3."""
-    result = {}
+    """FCPO Day (T), third displayed row, using its Last Done value."""
+    page_url = "https://www.bursamalaysia.com/market_information/derivatives_prices"
+    api_url = (
+        "https://www.bursamalaysia.com/api/v1/derivatives_prices/"
+        "derivatives_prices?code=FCPO&ses=day&per_page=20&page=1"
+    )
     try:
-        resp = fetch(
-            "https://www.bursamalaysia.com/trade/market/derivatives_market",
+        response = fetch(
+            api_url,
+            headers={"Referer": page_url},
             timeout=30,
         )
-        bs = BeautifulSoup(resp.text, "lxml")
-        tables = bs.find_all("table")
-        for table in tables:
-            rows = table.find_all("tr")
-            if len(rows) < 4:
-                continue
-            # Find the FCPO table: first header cell should say "Futures/Months"
-            header_cells = rows[0].find_all(["th", "td"])
-            if not header_cells or "Futures" not in header_cells[0].get_text(
-                strip=True
-            ):
-                continue
-            # Row index 2 = 3rd row (0-based), the row the user wants
-            row = rows[2]
-            cells = row.find_all(["td", "th"])
-            if len(cells) < 4:
-                continue
-            last_raw = cells[1].get_text(strip=True).replace(",", "")
-            chg_raw = cells[2].get_text(strip=True).replace(",", "")
-            try:
-                close = float(last_raw)
-                change = float(chg_raw)
-                prev_close = close - change
-                pct = round((change / prev_close) * 100, 2) if prev_close else 0.0
-                result["CPO"] = {
-                    "close": f"{close:.2f}",
-                    "change": f"{change:+.2f}",
-                    "change_pct": f"{pct:+.2f}%",
-                    "source": "Bursa Malaysia",
-                }
-            except (ValueError, TypeError):
-                pass
-            break
+        return parse_bursa_cpo_payload(response.json())
     except Exception as e:
         print(f"  WARN Bursa CPO: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
-    return result
+        return {}
+
+
+def parse_bursa_cpo_payload(payload):
+    """Parse Bursa's DataTables JSON; columns follow the page's visible table."""
+    rows = payload.get("data", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list) or len(rows) < 3:
+        return {}
+    row = rows[2]  # third displayed FCPO Day (T) row
+    if not isinstance(row, list) or len(row) < 8:
+        return {}
+    name = BeautifulSoup(str(row[1]), "lxml").get_text(" ", strip=True)
+    if name != "FCPO":
+        return {}
+    try:
+        close = float(str(row[6]).replace(",", ""))  # Last Done
+        change_text = BeautifulSoup(str(row[7]), "lxml").get_text(" ", strip=True)
+        change = float(change_text.replace(",", ""))
+    except (TypeError, ValueError):
+        return {}
+    previous_close = close - change
+    percent = (change / previous_close * 100) if previous_close else 0.0
+    return {
+        "CPO": {
+            "close": f"{close:.2f}",
+            "change": f"{change:+.2f}",
+            "change_pct": f"{percent:+.2f}%",
+            "contract": str(row[2]),
+            "source": "Bursa Malaysia",
+        }
+    }
 
 
 # ──────────────── SUNSIRS WOOD PULP ────────────────
@@ -1115,6 +1319,9 @@ def parse_sunsirs_woodpulp():
         # First table = Spot Price: Daily
         table = tables[0]
         rows = table.find_all("tr")
+        headers = rows[0].find_all(["th", "td"]) if rows else []
+        previous_date = headers[2].get_text(strip=True) if len(headers) > 3 else ""
+        latest_date = headers[3].get_text(strip=True) if len(headers) > 3 else ""
         for row in rows[1:]:  # skip header
             cells = row.find_all("td")
             if len(cells) < 5:
@@ -1135,6 +1342,8 @@ def parse_sunsirs_woodpulp():
                         "close": f"{close:.2f}",
                         "change": f"{change:+.2f}",
                         "change_pct": f"{pct:+.2f}%",
+                        "date": latest_date,
+                        "previous_date": previous_date,
                         "source": "SunSirs",
                     }
                 except (ValueError, TypeError):
@@ -1183,17 +1392,26 @@ COMMODITY_FUTURES_KEYS = (
     "Oil(WT)",
     "Oil(Brn)",
     "Ntrl Gas",
-    "Gold",
-    "Silver",
-    "Copper",
     "Aluminium",
     "Nickel",
-    "Timah",
-    "Corn",
-    "SoybeanOil",
-    "Wheat",
 )
 US_BOND_KEYS = ("US2Yr", "US5Yr", "US10Yr", "US30Yr")
+REQUESTED_SOURCE_BY_KEY = {
+    "IDR": "Bloomberg",
+    "Gold": "Bloomberg",
+    "Gold(Spot)": "Bloomberg",
+    "Silver": "Bloomberg",
+    "Copper": "Bloomberg",
+    "USDIndx": "Bloomberg",
+    "Euro": "Bloomberg",
+    "Timah": "Bloomberg",
+    "Corn": "Bloomberg",
+    "Wheat": "Bloomberg",
+    "SoybeanOil": "Bloomberg",
+    "Ammonia": "SunSirs",
+    "CPO": "Bursa Malaysia",
+    "KOSPI": "KOSPI 50",
+}
 
 
 def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
@@ -1216,6 +1434,12 @@ def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
             return results
         for key in keys:
             cached_item = cached_data.get(key)
+            required_source = REQUESTED_SOURCE_BY_KEY.get(key)
+            if required_source and (
+                not isinstance(cached_item, dict)
+                or cached_item.get("source") != required_source
+            ):
+                continue
             if is_recent_cached_item(
                 cache_raw, cached_item, cache_now, cache_max_age_seconds
             ):
@@ -1233,22 +1457,17 @@ def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
     t0 = datetime.now()
 
     single_pages = [
+        ("KOSPI 50", "https://www.investing.com/indices/kospi-50", "KOSPI"),
         (
             "Iron Ore",
             "https://www.investing.com/commodities/iron-ore-62-cfr-futures",
             "Iron Ore 62%",
         ),
-        ("Tin", "https://www.investing.com/commodities/tin", "Timah"),
-        ("Silver", "https://www.investing.com/commodities/silver", "Silver"),
-        ("Copper", "https://www.investing.com/commodities/copper", "Copper"),
         (
             "BCOMIN",
             "https://www.investing.com/indices/bloomberg-industrial-metals",
             "BCOMIN",
         ),
-        ("USD/IDR", "https://www.investing.com/currencies/usd-idr", "IDR"),
-        ("EUR/USD", "https://www.investing.com/currencies/eur-usd", "Euro"),
-        ("Gold Spot", "https://www.investing.com/currencies/xau-usd", "Gold(Spot)"),
         # Additional direct instrument pages to ensure key commodities are fetched
         ("Crude Oil WTI", "https://www.investing.com/commodities/crude-oil", "Oil(WT)"),
         ("Brent Oil", "https://www.investing.com/commodities/brent-oil", "Oil(Brn)"),
@@ -1298,6 +1517,20 @@ def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
         ),
         ("SunSirs Woodpulp", parse_sunsirs_woodpulp, ("Woodpulp",)),
         ("Commodities", parse_commodities_futures, COMMODITY_FUTURES_KEYS),
+        ("Bloomberg USD/IDR", parse_bloomberg_usdidr, ("IDR",)),
+        ("Bloomberg DXY", parse_bloomberg_dxy, ("USDIndx",)),
+        ("Bloomberg EUR/USD", parse_bloomberg_eurusd, ("Euro",)),
+        ("Bloomberg Tin", parse_bloomberg_tin, ("Timah",)),
+        (
+            "Bloomberg Metals",
+            parse_bloomberg_metals,
+            ("Gold", "Gold(Spot)", "Silver", "Copper"),
+        ),
+        (
+            "Bloomberg Agriculture",
+            parse_bloomberg_agriculture,
+            ("Corn", "Wheat", "SoybeanOil"),
+        ),
         *[
             (
                 label,
@@ -1337,13 +1570,10 @@ def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
                 ("EIDO", "EIDO"),
                 ("EEM", "EEM"),
                 ("TLK", "TLKM"),
-                ("SI%3DF", "Silver"),
-                ("HG%3DF", "Copper"),
             ]
         ],
-        ("DXY Yahoo API", parse_yahoo_dxy, ("USDIndx",)),
         ("IndoCDS", parse_indonesia_cds, ("IndoCDS 5yr",)),
-        ("Ammonia", parse_ammonia, ("Ammonia",)),
+        ("SunSirs Ammonia", parse_ammonia, ("Ammonia",)),
         ("IDX Property", parse_yahoo_idx_property, ("IDX Property",)),
         ("Bursa CPO", parse_bursa_cpo, ("CPO",)),
     ]

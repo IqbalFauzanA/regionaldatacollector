@@ -19,7 +19,11 @@ from regional_report.commons import (
 )
 from regional_report.exports import save_report_exports
 from regional_report.formatters import format_report, format_report_whatsapp
-from regional_report.parsers import collect_data, fetch_market_news
+from regional_report.parsers import (
+    REQUESTED_SOURCE_BY_KEY,
+    collect_data,
+    fetch_market_news,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,12 @@ def _merge_partial_cache(cache_raw, data, sources, timestamp):
             continue
 
         cached_item = cached_data.get(key)
+        required_source = REQUESTED_SOURCE_BY_KEY.get(key)
+        if required_source and (
+            not isinstance(cached_item, dict)
+            or cached_item.get("source") != required_source
+        ):
+            continue
         if is_recent_cached_item(cache_raw, cached_item):
             merged[key] = normalize_cached_item_timestamp(cache_raw, cached_item)
             used_cached = True

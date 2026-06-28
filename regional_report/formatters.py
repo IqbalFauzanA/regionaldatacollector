@@ -23,12 +23,12 @@ def get_change(d):
     if not isinstance(d, dict):
         return ""
     pct = d.get("change_pct", "")
-    if pct and pct not in ("", "0", "0%"):
+    if pct is not None and str(pct).strip() not in ("", "None"):
         try:
             pct_num = abs(
                 float(str(pct).replace("%", "").replace("+", "").replace(",", ""))
             )
-            if pct_num == 0 or pct_num > 50:
+            if pct_num > 50:
                 return ""
         except (ValueError, ZeroDivisionError):
             pass
@@ -46,13 +46,8 @@ def get_point_change(d):
     if not isinstance(d, dict):
         return ""
     chg = d.get("change", "")
-    if chg and chg not in ("", "0", "None"):
+    if chg is not None and str(chg).strip() not in ("", "None"):
         s = str(chg).strip()
-        try:
-            if float(s.replace("+", "").replace(",", "")) == 0:
-                return ""
-        except ValueError:
-            pass
         if not s.startswith(("+", "-")):
             s = "+" + s
         return s
@@ -127,6 +122,20 @@ def decorate_value(d, base=None):
     if abs_pct > 2.0:
         return f"**{base}**"
     return base
+
+
+def _tlkm_idr_equivalent(data):
+    """Convert the TLKM ADR price to its approximate local-share IDR value."""
+    try:
+        tlkm = float(str(close_str(data.get("TLKM"))).replace(",", ""))
+        jisdor = float(str(close_str(data.get("Jisdor"))).replace(",", ""))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if tlkm <= 0 or jisdor <= 0:
+        return None
+
+    converted = tlkm * jisdor / 20 / 2 / 5 * 2
+    return int(converted + 0.5)
 
 
 def format_report(data, market_news=None):
@@ -317,9 +326,13 @@ def format_report(data, market_news=None):
     lines.append("")
 
     lines.append("## \U0001f3d7\ufe0f Metals & Mining")
+    add_line("Gold", "Gold")
+    gold_spot = data.get("Gold(Spot)")
+    if isinstance(gold_spot, dict) and is_valid_data(gold_spot):
+        add_line("Gold", "Gold(Spot)")
+        lines.append("     (XAU/USD)")
     add_group(
         [
-            ("Gold(Spot)", "Gold"),
             ("Silver", "Silver"),
             ("Copper", "Copper"),
             ("Nickel", "Nickel"),
@@ -343,23 +356,24 @@ def format_report(data, market_news=None):
         value = kv(key)
         if not value:
             continue
-        note = ""
-        if key == "Ammonia":
-            d = data.get(key, {})
-            raw_note = d.get("note", "") if isinstance(d, dict) else ""
-            note = f" ({raw_note})" if raw_note else ""
-        lines.append(f"- **{label}:** {value}{note}")
+        lines.append(f"- **{label}:** {value}")
     lines.append("")
 
     lines.append("## \U0001f4c8 ETFs & Stocks")
     for key, label in [("EIDO", "EIDO"), ("TLKM", "TLKM"), ("EEM", "EEM")]:
         add_line(label, key, suppress_bad_point=False)
+        if key == "TLKM":
+            tlkm_idr = _tlkm_idr_equivalent(data)
+            if tlkm_idr is not None:
+                lines.append(f"        ({tlkm_idr})")
 
     lines.append("---")
     lines.append("## Footer")
     lines.append("- **Broker Code:** AT")
     lines.append("- **Prepared by:** Desy Erawati / DE")
-    lines.append("- **Sources:** Bloomberg, Investing, IBPA, CNBC, Bursa Malaysia")
+    lines.append(
+        "- **Sources:** Bloomberg, Investing, IBPA, CNBC, Bursa Malaysia, SunSirs"
+    )
     lines.append("- **Copyright:** Phintraco Sekuritas")
 
     return "\n".join(lines)

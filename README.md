@@ -113,7 +113,7 @@ Use `output\regional_report.pdf` as the formatted archive/shareable version.
 | Market News Summary | Top 5 Google News RSS market headlines |
 | US Indices | Dow, S&P 500, Nasdaq, S&P 500 VIX |
 | Europe | DAX, FTSE, CAC |
-| Asia | Nikkei, Shanghai, HSI, KOSPI, STI |
+| Asia | Nikkei, Shanghai, HSI, KOSPI 50, STI |
 | Indonesia | IDX, LQ45, Kompas 100, IDX30, IDX sector indices |
 | Indonesia Rates & Credit | USD/IDR, Jisdor, Indo10Yr, ICBI, IndoCDS 5yr |
 | FX & Bonds | EUR/USD, DXY, US2Yr, US10Yr, US30Yr |
@@ -219,9 +219,13 @@ and the modules under `regional_report\`.
 - Google News RSS supplies the live market headlines.
 - Bank Indonesia supplies Jisdor data.
 - WorldGovernmentBonds supplies IndoCDS data through
-  `/wp-json/common/v1/historical`.
+  `/wp-json/common/v1/historical`; its daily move is calculated from the latest
+  two distinct dates in the raw quote series, not the page's monthly change.
 - Barchart supplies Newcastle and Rotterdam coal futures.
 - Bursa Malaysia supplies CPO data.
+- Bloomberg supplies USD/IDR, EUR/USD, DXY, Gold (Comex and spot), silver,
+  copper, tin, corn, wheat, and soybean oil.
+- SunSirs supplies the daily China liquid-ammonia price and recent history.
 - Yahoo Finance and Investing-style pages supply many index, FX, ETF, stock,
   commodity, and rates values.
 - `curl_cffi` is preferred for modern TLS and browser impersonation; the code
