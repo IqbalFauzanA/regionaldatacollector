@@ -289,12 +289,14 @@ def parse_phei():
 
 def parse_commodities_futures():
     results = {}
-    wanted = {
-        "Crude Oil WTI": "Oil(WT)",
-        "Brent Oil": "Oil(Brn)",
-        "Natural Gas": "Ntrl Gas",
-        "Aluminium": "Aluminium",
-        "Nickel": "Nickel",
+    wanted_names = {
+        "crude oil wti": "Oil(WT)",
+        "wti crude oil": "Oil(WT)",
+        "brent oil": "Oil(Brn)",
+        "natural gas": "Ntrl Gas",
+        "aluminium": "Aluminium",
+        "aluminum": "Aluminium",
+        "nickel": "Nickel",
     }
     try:
         resp = fetch("https://www.investing.com/commodities/real-time-futures")
@@ -312,25 +314,40 @@ def parse_commodities_futures():
             header_cells = rows[0].find_all(["th", "td"]) if rows else []
             header_texts = [c.get_text(" ", strip=True).lower() for c in header_cells]
 
-            def find_header_index(keywords):
-                for i, h in enumerate(header_texts):
-                    for kw in keywords:
-                        if kw in h:
-                            return i
-                return None
+            def normalize_header(value: str) -> str:
+                value = value.lower().replace(".", " ")
+                return re.sub(r"\s+", " ", value).strip()
+
+            normalized_headers = [normalize_header(h) for h in header_texts]
+
+            def find_header_index(accepted):
+                return next(
+                    (i for i, h in enumerate(normalized_headers) if h in accepted),
+                    None,
+                )
 
             name_idx = find_header_index(
-                ["name", "contract", "commodity", "instrument", "symbol"]
+                {"name", "contract", "commodity", "instrument", "symbol"}
             )
-            if name_idx is None:
-                name_idx = 1 if len(header_cells) > 1 else 0
-            last_idx = find_header_index(["last", "price", "close"])
-            if last_idx is None:
-                last_idx = find_header_index(["ltd"])
-            if last_idx is None:
-                last_idx = 3
-            chg_idx = find_header_index(["change", "chg"])
-            pct_idx = find_header_index(["%", "change (%)", "chg%", "change%", "ch%"])
+            last_idx = find_header_index({"last", "price", "close", "ltd"})
+            pct_idx = next(
+                (i for i, h in enumerate(normalized_headers) if "%" in h), None
+            )
+            chg_idx = next(
+                (
+                    i
+                    for i, h in enumerate(normalized_headers)
+                    if h in {"change", "chg", "change value", "chg value"}
+                    and "%" not in h
+                ),
+                None,
+            )
+
+            # A compact sidebar table only has Last and Chg. %, so it cannot
+            # supply the absolute move. Accept only the full futures table;
+            # missing instruments are handled by the instrument-page fallback.
+            if not name_idx or not last_idx or not chg_idx or not pct_idx:
+                continue
 
             def _normalize_name(n: str) -> str:
                 s = n or ""
@@ -346,6 +363,7 @@ def parse_commodities_futures():
                 )
                 # strip 'derived' suffix and extra whitespace
                 s = re.sub(r"\s*derived$", "", s, flags=re.I).strip()
+                s = re.sub(r"\s+futures?$", "", s, flags=re.I).strip()
                 s = re.sub(r"\s+", " ", s)
                 return s
 
@@ -362,84 +380,30 @@ def parse_commodities_futures():
                 # lightweight debug trace to help diagnose missing matches
                 logger.debug("Commodities row: raw=%r norm=%r", name_raw, name_norm)
 
-                # find the best matching wanted key (robust substring/word match)
-                matched_key = None
-                name_l = name_norm.lower()
-                for wk in wanted:
-                    if wk.lower() == name_l:
-                        matched_key = wk
-                        break
-                if not matched_key:
-                    for wk in wanted:
-                        if wk.lower() in name_l or name_l in wk.lower():
-                            matched_key = wk
-                            break
-                if not matched_key:
-                    # token overlap (require at least 3-char token to avoid spurious matches)
-                    tokens = re.findall(r"\w{3,}", name_l)
-                    for wk in wanted:
-                        wk_l = wk.lower()
-                        for t in tokens:
-                            if t in wk_l:
-                                matched_key = wk
-                                break
-                        if matched_key:
-                            break
-                if not matched_key:
+                # Use exact canonical names. Fuzzy token matching allowed rows such
+                # as Soybean Oil and Dutch TTF Natural Gas to overwrite WTI and
+                # Henry Hub Natural Gas respectively.
+                canonical_name = re.sub(
+                    r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", name_norm.lower())
+                ).strip()
+                code = wanted_names.get(canonical_name)
+                if code is None:
                     logger.debug("Commodities: no match for '%s'", name_norm)
                     continue
 
-                # robustly locate numeric fields after the name cell
-                last_txt = ""
-                chg_txt = ""
-                pct_txt = ""
-
-                # attempt by header indices first
-                if isinstance(last_idx, int) and last_idx < len(cells):
-                    last_txt = cells[last_idx].get_text(strip=True)
-
-                # fallback: find the first numeric-like cell after the name column
-                if not last_txt:
-                    for c in cells[name_idx + 1 :]:
-                        t = c.get_text(strip=True)
-                        if re.search(r"[0-9]", t) and re.search(r"\d", t):
-                            # prefer values that look like a price (contains digit and dot or comma)
-                            if re.match(r"^[+-]?\d[\d,\.]*%?$", t):
-                                last_txt = t
-                                break
-
-                # change: try header index then first numeric after last that's different
-                if chg_idx is not None and chg_idx < len(cells):
-                    chg_txt = cells[chg_idx].get_text(strip=True)
-                else:
-                    for c in cells[name_idx + 1 :]:
-                        t = c.get_text(strip=True)
-                        if not t:
-                            continue
-                        if t == last_txt:
-                            continue
-                        if re.match(r"^[+-]?\d[\d,\.]*%?$", t):
-                            chg_txt = t
-                            break
-
-                # percent: prefer explicit '%' occurrence from the end of the row
-                if pct_idx is not None and pct_idx < len(cells):
-                    pct_txt = cells[pct_idx].get_text(strip=True)
-                else:
-                    for c in reversed(cells):
-                        t = c.get_text(strip=True)
-                        if "%" in t:
-                            pct_txt = t
-                            break
+                if max(last_idx, chg_idx, pct_idx) >= len(cells):
+                    continue
+                last_txt = cells[last_idx].get_text(strip=True)
+                chg_txt = cells[chg_idx].get_text(strip=True)
+                pct_txt = cells[pct_idx].get_text(strip=True)
 
                 if not last_txt:
                     continue
 
-                code = wanted[matched_key]
                 logger.debug(
-                    "Commodities: matched %r -> %r (code=%s)",
+                    "Commodities: matched %r (canonical=%r, code=%s)",
                     name_norm,
-                    matched_key,
+                    canonical_name,
                     code,
                 )
                 results[code] = {
@@ -469,7 +433,8 @@ def parse_commodities_futures():
             ],
             "Nickel": ["https://www.investing.com/commodities/nickel"],
         }
-        for code in (code for code in wanted.values() if code not in results):
+        wanted_codes = dict.fromkeys(wanted_names.values())
+        for code in (code for code in wanted_codes if code not in results):
             for url in fallback_urls[code]:
                 logger.debug("Commodities: fallback try %s for code %s", url, code)
                 parsed = parse_instrument_page(url, "Investing Futures", code)

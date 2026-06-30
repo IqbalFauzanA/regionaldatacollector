@@ -214,6 +214,44 @@ class RequestedSourceParserTests(unittest.TestCase):
         )
         fallback.assert_not_called()
 
+    def test_commodity_rows_are_not_overwritten_by_similarly_named_contracts(self):
+        html = """
+            <table>
+              <tr>
+                <th></th><th>Name</th><th>Month</th><th>Last</th>
+                <th>High</th><th>Low</th><th>Chg.</th><th>Chg. %</th><th>Time</th>
+              </tr>
+              <tr><td></td><td>Crude Oil WTI derived</td><td>Aug 26</td><td>70.11</td><td>71.56</td><td>69.73</td><td>-0.64</td><td>-0.90%</td><td>12:15</td></tr>
+              <tr><td></td><td>Brent Oil derived</td><td>Sep 26</td><td>73.68</td><td>74.83</td><td>73.08</td><td>-0.23</td><td>-0.31%</td><td>12:15</td></tr>
+              <tr><td></td><td>Natural Gas derived</td><td>Aug 26</td><td>3.319</td><td>3.322</td><td>3.160</td><td>+0.138</td><td>+4.34%</td><td>12:15</td></tr>
+              <tr><td></td><td>Dutch TTF Natural Gas</td><td>Aug 26</td><td>43.580</td><td>43.945</td><td>42.090</td><td>+0.964</td><td>+2.26%</td><td>12:15</td></tr>
+              <tr><td></td><td>US Soybean Oil derived</td><td>Dec 26</td><td>20.88</td><td>21.00</td><td>20.00</td><td>-0.95</td><td>-4.33%</td><td>12:15</td></tr>
+              <tr><td></td><td>Aluminium derived</td><td></td><td>3,091.40</td><td>3,141.50</td><td>3,084.90</td><td>-8.40</td><td>-0.27%</td><td>12:15</td></tr>
+              <tr><td></td><td>Nickel derived</td><td></td><td>16,308.63</td><td>16,603.88</td><td>16,166.00</td><td>+2.00</td><td>+0.01%</td><td>12:15</td></tr>
+            </table>
+        """
+        with (
+            patch(
+                "regional_report.parsers.fetch",
+                return_value=SimpleNamespace(text=html),
+            ),
+            patch("regional_report.parsers.parse_instrument_page") as fallback,
+        ):
+            result = parse_commodities_futures()
+
+        self.assertEqual(
+            result["Oil(WT)"],
+            {
+                "close": "70.11",
+                "change": "-0.64",
+                "change_pct": "-0.90%",
+                "source": "Investing Futures",
+            },
+        )
+        self.assertEqual(result["Oil(Brn)"]["close"], "73.68")
+        self.assertEqual(result["Ntrl Gas"]["close"], "3.319")
+        fallback.assert_not_called()
+
     def test_kospi_50_is_authoritative_kospi_source(self):
         payload = {
             "props": {
