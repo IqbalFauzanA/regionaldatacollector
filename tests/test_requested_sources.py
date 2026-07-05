@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from regional_report.formatters import format_report_whatsapp, format_report
 from regional_report.parsers import (
+    US_BOND_KEYS,
     _barchart_contract_months,
     parse_bloomberg_agriculture_html,
     parse_bloomberg_metals_html,
@@ -17,6 +18,7 @@ from regional_report.parsers import (
     parse_ammonia,
     parse_indonesia_cds_payload,
     parse_jisdor,
+    parse_table_pages,
     parse_sunsirs_woodpulp,
     parse_yahoo_sector_indices,
     REQUESTED_SOURCE_BY_KEY,
@@ -29,6 +31,28 @@ def next_data_html(page_props):
 
 
 class RequestedSourceParserTests(unittest.TestCase):
+    def test_table_parser_discards_rows_not_requested_by_the_report(self):
+        html = """
+            <table>
+              <tr><th></th><th>Name</th><th>Last</th><th></th><th></th><th></th><th>Chg.</th><th>Chg. %</th></tr>
+              <tr><td></td><td>U.S. 2Y</td><td>4.25</td><td></td><td></td><td></td><td>+0.01</td><td>+0.24%</td></tr>
+              <tr><td></td><td>U.S. 5Y</td><td>4.30</td><td></td><td></td><td></td><td>+0.02</td><td>+0.47%</td></tr>
+              <tr><td></td><td>U.S. 10Y</td><td>4.40</td><td></td><td></td><td></td><td>+0.03</td><td>+0.69%</td></tr>
+              <tr><td></td><td>U.S. 1M</td><td>4.50</td><td></td><td></td><td></td><td>+0.04</td><td>+0.90%</td></tr>
+            </table>
+        """
+        with patch(
+            "regional_report.parsers.fetch",
+            return_value=SimpleNamespace(text=html),
+        ):
+            result = parse_table_pages(
+                [("US Bonds", "https://example.test", 1, 2, 6, 7)],
+                US_BOND_KEYS,
+            )
+
+        self.assertEqual(set(result), {"US2Yr", "US10Yr"})
+        self.assertNotIn("US5Yr", US_BOND_KEYS)
+
     def test_barchart_coal_contract_months_roll_forward(self):
         self.assertEqual(
             _barchart_contract_months(datetime(2026, 7, 1)),

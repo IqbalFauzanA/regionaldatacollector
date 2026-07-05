@@ -92,41 +92,16 @@ def label_from_name(name):
         "cac 40": "CAC",
         "nikkei 225": "Nikkei",
         "hang seng": "HSI",
-        "euro stoxx 50": "Euro Stoxx 50",
-        "ftse mib": "FTSE MIB",
-        "swiss market index": "SMI",
         "shanghai": "Shanghai",
-        "szse component": "SZSE Component",
         "idx composite": "IDX",
         "idx lq45": "LQ45",
         "idx kompas 100": "Kompas 100",
-        "ftse indonesia local": "FTSE Indonesia",
         "idx30": "IDX30",
         "idx 30": "IDX30",
-        "idx energy": "IDX Energy",
-        "idx basic materials": "IDX Basic Materials",
-        "idx industrials": "IDX Industrial",
-        "idx consumer non-cyclicals": "IDX Consumer Non-Cyclical",
-        "idx healthcare": "IDX Healthcare",
-        "idx consumer cyclical": "IDX Consumer Cyclical",
-        "idx technology": "IDX Technology",
-        "idx transportation": "IDX Transportation",
-        "idx infrastructure": "IDX Infrastructure",
-        "idx finance": "IDX Finance",
-        "idx banking": "IDX Banking",
         "u.s. 2y": "US2Yr",
-        "u.s. 5y": "US5Yr",
         "u.s. 10y": "US10Yr",
         "u.s. 30y": "US30Yr",
-        "indo 10y": "Indo10Yr",
-        "indonesia 10y": "Indo10Yr",
         "s&p 500 vix": "S&P 500 VIX",
-        "nifty 50": "Nifty 50",
-        "s&p/asx 200": "S&P/ASX 200",
-        "psei composite": "PSEi Composite",
-        "set": "SET",
-        "taiwan weighted": "Taiwan Weighted",
-        "smi": "SMI",
     }
     key = name.lower().strip()
     if key in mapping:
@@ -137,7 +112,9 @@ def label_from_name(name):
 # ────────────────── TABLE-BASED PARSERS ──────────────────
 
 
-def parse_table_pages(pages):
+def parse_table_pages(pages, requested_keys):
+    """Parse table rows and retain only report-requested keys."""
+    requested_keys = set(requested_keys)
     results = {}
     for label, url, name_col, last_col, chg_col, chg_pct_col in pages:
         try:
@@ -159,6 +136,8 @@ def parse_table_pages(pages):
                     name = cells[name_col].get_text(" ", strip=True)
                     name_clean = re.sub(r"\s*derived$", "", name).strip()
                     report_label = label_from_name(name_clean)
+                    if report_label not in requested_keys:
+                        continue
                     last_txt = cells[last_col].get_text(strip=True)
                     chg_txt = (
                         cells[chg_col].get_text(strip=True)
@@ -1367,7 +1346,7 @@ COMMODITY_FUTURES_KEYS = (
     "Aluminium",
     "Nickel",
 )
-US_BOND_KEYS = ("US2Yr", "US5Yr", "US10Yr", "US30Yr")
+US_BOND_KEYS = ("US2Yr", "US10Yr", "US30Yr")
 REQUESTED_SOURCE_BY_KEY = {
     "USD/IDR": "Bloomberg",
     "Gold": "Bloomberg",
@@ -1469,7 +1448,8 @@ def collect_data(
                         5,
                         6,
                     ),
-                ]
+                ],
+                MAJOR_INDEX_KEYS,
             ),
             MAJOR_INDEX_KEYS,
         ),
@@ -1485,7 +1465,8 @@ def collect_data(
                         5,
                         6,
                     ),
-                ]
+                ],
+                IDX_INDEX_KEYS,
             ),
             IDX_INDEX_KEYS,
         ),
@@ -1527,7 +1508,8 @@ def collect_data(
                         6,
                         7,
                     ),
-                ]
+                ],
+                US_BOND_KEYS,
             ),
             US_BOND_KEYS,
         ),

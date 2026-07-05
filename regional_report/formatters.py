@@ -229,7 +229,6 @@ def format_report(data, market_news=None):
             "Shanghai",
             "HSI",
             "KOSPI",
-            "STI",
         ]
     )
     lines.append("")
