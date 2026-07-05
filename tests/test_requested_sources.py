@@ -61,7 +61,7 @@ class RequestedSourceParserTests(unittest.TestCase):
                 }
             }
         )
-        item = parse_bloomberg_usdidr_html(html)["IDR"]
+        item = parse_bloomberg_usdidr_html(html)["USD/IDR"]
         self.assertEqual(item["close"], "17922.0000")
         self.assertEqual(item["change"], "-21.00")
         self.assertEqual(item["change_pct"], "-0.12%")
@@ -90,7 +90,9 @@ class RequestedSourceParserTests(unittest.TestCase):
             }
         )
         result = parse_bloomberg_metals_html(html)
-        self.assertEqual(set(result), {"Gold", "Gold(Spot)", "Silver", "Copper"})
+        self.assertEqual(
+            set(result), {"Gold", "Gold (XAU/USD)", "Silver", "Copper"}
+        )
         self.assertEqual(result["Silver"]["change"], "+0.88")
         self.assertEqual(result["Copper"]["close"], "620.70")
 
@@ -116,10 +118,10 @@ class RequestedSourceParserTests(unittest.TestCase):
             }
         )
         result = parse_bloomberg_agriculture_html(html)
-        self.assertEqual(set(result), {"Corn", "Wheat", "SoybeanOil"})
+        self.assertEqual(set(result), {"Corn", "Wheat", "Soybean Oil"})
         self.assertEqual(result["Corn"]["change"], "-2.75")
         self.assertEqual(result["Wheat"]["change_pct"], "+0.80%")
-        self.assertEqual(result["SoybeanOil"]["ticker"], "BO1:COM")
+        self.assertEqual(result["Soybean Oil"]["ticker"], "BO1:COM")
         for item in result.values():
             self.assertEqual(item["source"], "Bloomberg")
         for key in result:
@@ -127,11 +129,11 @@ class RequestedSourceParserTests(unittest.TestCase):
 
     def test_bloomberg_dxy_eurusd_and_tin_quotes(self):
         cases = [
-            ("DXY:CUR", "USDIndx", "101.3570", -0.07, -0.07),
-            ("EURUSD:CUR", "Euro", "1.1384", 0.0014, 0.12),
+            ("DXY:CUR", "DXY", "101.3570", -0.07, -0.07),
+            ("EURUSD:CUR", "EUR/USD", "1.1384", 0.0014, 0.12),
             ("LMSNDS03:COM", "Timah", "50,553.00", 170, 0.34),
         ]
-        for ticker, code, price, change, percent in cases:
+        for ticker, report_label, price, change, percent in cases:
             with self.subTest(ticker=ticker):
                 html = next_data_html(
                     {
@@ -143,7 +145,9 @@ class RequestedSourceParserTests(unittest.TestCase):
                         }
                     }
                 )
-                item = parse_bloomberg_quote_html(html, ticker, code)[code]
+                item = parse_bloomberg_quote_html(html, ticker, report_label)[
+                    report_label
+                ]
                 self.assertEqual(item["source"], "Bloomberg")
                 self.assertEqual(item["ticker"], ticker)
         self.assertEqual(
@@ -210,7 +214,7 @@ class RequestedSourceParserTests(unittest.TestCase):
             result = parse_commodities_futures()
 
         self.assertEqual(
-            set(result), {"Oil(WT)", "Oil(Brn)", "Ntrl Gas", "Aluminium", "Nickel"}
+            set(result), {"Oil WTI", "Oil Brent", "Nat Gas", "Aluminium", "Nickel"}
         )
         fallback.assert_not_called()
 
@@ -240,7 +244,7 @@ class RequestedSourceParserTests(unittest.TestCase):
             result = parse_commodities_futures()
 
         self.assertEqual(
-            result["Oil(WT)"],
+            result["Oil WTI"],
             {
                 "close": "70.11",
                 "change": "-0.64",
@@ -248,8 +252,8 @@ class RequestedSourceParserTests(unittest.TestCase):
                 "source": "Investing Futures",
             },
         )
-        self.assertEqual(result["Oil(Brn)"]["close"], "73.68")
-        self.assertEqual(result["Ntrl Gas"]["close"], "3.319")
+        self.assertEqual(result["Oil Brent"]["close"], "73.68")
+        self.assertEqual(result["Nat Gas"]["close"], "3.319")
         fallback.assert_not_called()
 
     def test_kospi_50_is_authoritative_kospi_source(self):
@@ -359,6 +363,25 @@ class RequestedSourceParserTests(unittest.TestCase):
         self.assertIn("- **Ammonia:** 2340.00 +0.00 +0.00%", report)
         self.assertNotIn("SunSirs (06/28)", report)
 
+    def test_report_looks_up_values_by_their_display_labels(self):
+        data = {
+            "Kompas 100": {"close": "100"},
+            "IDX Energy": {"close": "200"},
+            "USD/IDR": {"close": "16000"},
+            "EUR/USD": {"close": "1.10"},
+            "DXY": {"close": "99"},
+            "Oil WTI": {"close": "70"},
+            "Newcastle": {
+                "contracts": [{"month": "Jul", "price": "120"}]
+            },
+            "Soybean Oil": {"close": "55"},
+        }
+
+        report = format_report(data)
+
+        for label in data:
+            self.assertIn(f"**{label}:**", report)
+
     def test_invalid_market_news_does_not_create_empty_section(self):
         report = format_report({}, market_news=[{}, {"title": "Missing URL"}])
 
@@ -445,7 +468,7 @@ class RequestedSourceParserTests(unittest.TestCase):
     def test_gold_whatsapp_layout(self):
         data = {
             "Gold": {"close": "4043.50", "change": "+27.10", "change_pct": "+0.67%"},
-            "Gold(Spot)": {
+            "Gold (XAU/USD)": {
                 "close": "4024.1400",
                 "change": "+19.51",
                 "change_pct": "+0.49%",
@@ -453,9 +476,8 @@ class RequestedSourceParserTests(unittest.TestCase):
         }
         report = format_report_whatsapp(format_report(data))
         self.assertIn("• *Gold:* 4043.50 +27.10 +0.67%", report)
-        self.assertIn("• *Gold:* 4024.1400 +19.51 +0.49%", report)
+        self.assertIn("• *Gold (XAU/USD):* 4024.1400 +19.51 +0.49%", report)
         self.assertNotIn("❗", report)
-        self.assertIn("     (XAU/USD)", report)
 
     def test_tlkm_idr_equivalent_is_shown_below_tlkm(self):
         data = {

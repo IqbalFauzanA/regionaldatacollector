@@ -82,7 +82,7 @@ def parse_barchart_price_change(price_raw, chg_raw):
     return None, None, None
 
 
-def code_from_name(name):
+def label_from_name(name):
     mapping = {
         "dow jones": "Dow",
         "s&p 500": "S&P 500",
@@ -99,19 +99,19 @@ def code_from_name(name):
         "szse component": "SZSE Component",
         "idx composite": "IDX",
         "idx lq45": "LQ45",
-        "idx kompas 100": "IDX Kompas 100",
+        "idx kompas 100": "Kompas 100",
         "ftse indonesia local": "FTSE Indonesia",
         "idx30": "IDX30",
         "idx 30": "IDX30",
-        "idx energy": "IDXEnergy",
-        "idx basic materials": "IDX BscMat",
-        "idx industrials": "IDXIndst",
-        "idx consumer non-cyclicals": "IDXNONCYC",
-        "idx healthcare": "IDXHlthcare",
-        "idx consumer cyclical": "IDXCYCLC",
-        "idx technology": "IDX Tech",
-        "idx transportation": "IDX Transprt",
-        "idx infrastructure": "IDX Infra",
+        "idx energy": "IDX Energy",
+        "idx basic materials": "IDX Basic Materials",
+        "idx industrials": "IDX Industrial",
+        "idx consumer non-cyclicals": "IDX Consumer Non-Cyclical",
+        "idx healthcare": "IDX Healthcare",
+        "idx consumer cyclical": "IDX Consumer Cyclical",
+        "idx technology": "IDX Technology",
+        "idx transportation": "IDX Transportation",
+        "idx infrastructure": "IDX Infrastructure",
         "idx finance": "IDX Finance",
         "idx banking": "IDX Banking",
         "u.s. 2y": "US2Yr",
@@ -158,7 +158,7 @@ def parse_table_pages(pages):
                         continue
                     name = cells[name_col].get_text(" ", strip=True)
                     name_clean = re.sub(r"\s*derived$", "", name).strip()
-                    code = code_from_name(name_clean)
+                    report_label = label_from_name(name_clean)
                     last_txt = cells[last_col].get_text(strip=True)
                     chg_txt = (
                         cells[chg_col].get_text(strip=True)
@@ -170,8 +170,8 @@ def parse_table_pages(pages):
                         if chg_pct_col < len(cells)
                         else ""
                     )
-                    if last_txt and code:
-                        results[code] = {
+                    if last_txt and report_label:
+                        results[report_label] = {
                             "close": clean_num(last_txt),
                             "change": clean_num(chg_txt),
                             "change_pct": pct_txt,
@@ -290,10 +290,10 @@ def parse_phei():
 def parse_commodities_futures():
     results = {}
     wanted_names = {
-        "crude oil wti": "Oil(WT)",
-        "wti crude oil": "Oil(WT)",
-        "brent oil": "Oil(Brn)",
-        "natural gas": "Ntrl Gas",
+        "crude oil wti": "Oil WTI",
+        "wti crude oil": "Oil WTI",
+        "brent oil": "Oil Brent",
+        "natural gas": "Nat Gas",
         "aluminium": "Aluminium",
         "aluminum": "Aluminium",
         "nickel": "Nickel",
@@ -391,8 +391,8 @@ def parse_commodities_futures():
                 canonical_name = re.sub(
                     r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", name_norm.lower())
                 ).strip()
-                code = wanted_names.get(canonical_name)
-                if code is None:
+                report_label = wanted_names.get(canonical_name)
+                if report_label is None:
                     logger.debug("Commodities: no match for '%s'", name_norm)
                     continue
 
@@ -406,12 +406,12 @@ def parse_commodities_futures():
                     continue
 
                 logger.debug(
-                    "Commodities: matched %r (canonical=%r, code=%s)",
+                    "Commodities: matched %r (canonical=%r, label=%s)",
                     name_norm,
                     canonical_name,
-                    code,
+                    report_label,
                 )
-                results[code] = {
+                results[report_label] = {
                     "close": clean_num(last_txt),
                     "change": clean_num(chg_txt) if chg_txt else None,
                     "change_pct": pct_txt,
@@ -420,15 +420,15 @@ def parse_commodities_futures():
         # Only fall back after every table has been searched. Doing this inside
         # the table loop repeated the same network requests for multi-table pages.
         fallback_urls = {
-            "Oil(WT)": [
+            "Oil WTI": [
                 "https://www.investing.com/commodities/crude-oil",
                 "https://www.investing.com/commodities/crude-oil-wti",
             ],
-            "Oil(Brn)": [
+            "Oil Brent": [
                 "https://www.investing.com/commodities/brent-oil",
                 "https://www.investing.com/commodities/brent-oil-futures",
             ],
-            "Ntrl Gas": [
+            "Nat Gas": [
                 "https://www.investing.com/commodities/natural-gas",
                 "https://www.investing.com/commodities/natural-gas-futures",
             ],
@@ -438,14 +438,20 @@ def parse_commodities_futures():
             ],
             "Nickel": ["https://www.investing.com/commodities/nickel"],
         }
-        wanted_codes = dict.fromkeys(wanted_names.values())
-        for code in (code for code in wanted_codes if code not in results):
-            for url in fallback_urls[code]:
-                logger.debug("Commodities: fallback try %s for code %s", url, code)
-                parsed = parse_instrument_page(url, "Investing Futures", code)
-                value = parsed.get(code)
+        wanted_labels = dict.fromkeys(wanted_names.values())
+        for report_label in (
+            label for label in wanted_labels if label not in results
+        ):
+            for url in fallback_urls[report_label]:
+                logger.debug(
+                    "Commodities: fallback try %s for label %s", url, report_label
+                )
+                parsed = parse_instrument_page(
+                    url, "Investing Futures", report_label
+                )
+                value = parsed.get(report_label)
                 if is_valid_data(value):
-                    results[code] = value
+                    results[report_label] = value
                     break
     except Exception as e:
         print(f"  WARN Commodities: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
@@ -521,21 +527,21 @@ def _bloomberg_market_item(security):
     }
 
 
-def parse_bloomberg_quote_html(html, ticker, code):
+def parse_bloomberg_quote_html(html, ticker, report_label):
     """Parse one Bloomberg quote page into the collector's data shape."""
     quote = _next_data_page_props(html).get("quote", {})
     if not isinstance(quote, dict) or quote.get("id") != ticker:
         return {}
     item = _bloomberg_market_item(quote)
-    return {code: item} if item else {}
+    return {report_label: item} if item else {}
 
 
 def parse_bloomberg_usdidr_html(html):
     """Parse USD/IDR from Bloomberg's embedded quote payload."""
-    return parse_bloomberg_quote_html(html, "USDIDR:CUR", "IDR")
+    return parse_bloomberg_quote_html(html, "USDIDR:CUR", "USD/IDR")
 
 
-def _parse_bloomberg_sections_html(html, wanted):
+def _parse_bloomberg_sections_html(html, labels_by_ticker):
     """Parse selected ticker rows from a Bloomberg section-front page."""
     page_props = _next_data_page_props(html)
     sections = (
@@ -555,12 +561,12 @@ def _parse_bloomberg_sections_html(html, wanted):
             id = security.get("id")
             if not isinstance(id, str):
                 continue
-            code = wanted.get(id)
-            if not code:
+            report_label = labels_by_ticker.get(id)
+            if not report_label:
                 continue
             item = _bloomberg_market_item(security)
             if item:
-                result[code] = item
+                result[report_label] = item
     return result
 
 
@@ -570,7 +576,7 @@ def parse_bloomberg_metals_html(html):
         html,
         {
             "GC1:COM": "Gold",
-            "XAUUSD:CUR": "Gold(Spot)",
+            "XAUUSD:CUR": "Gold (XAU/USD)",
             "SI1:COM": "Silver",
             "HG1:COM": "Copper",
         },
@@ -584,7 +590,7 @@ def parse_bloomberg_agriculture_html(html):
         {
             "C 1:COM": "Corn",
             "W 1:COM": "Wheat",
-            "BO1:COM": "SoybeanOil",
+            "BO1:COM": "Soybean Oil",
         },
     )
 
@@ -600,10 +606,10 @@ def parse_bloomberg_usdidr():
         return {}
 
 
-def _parse_bloomberg_quote(url, ticker, code, label):
+def _parse_bloomberg_quote(url, ticker, label):
     try:
         return parse_bloomberg_quote_html(
-            _fetch_bloomberg_html(url), ticker, code
+            _fetch_bloomberg_html(url), ticker, label
         )
     except Exception as e:
         print(
@@ -614,18 +620,18 @@ def _parse_bloomberg_quote(url, ticker, code, label):
 
 
 def parse_bloomberg_dxy():
-    return _parse_bloomberg_quote(BLOOMBERG_DXY_URL, "DXY:CUR", "USDIndx", "DXY")
+    return _parse_bloomberg_quote(BLOOMBERG_DXY_URL, "DXY:CUR", "DXY")
 
 
 def parse_bloomberg_eurusd():
     return _parse_bloomberg_quote(
-        BLOOMBERG_EURUSD_URL, "EURUSD:CUR", "Euro", "EUR/USD"
+        BLOOMBERG_EURUSD_URL, "EURUSD:CUR", "EUR/USD"
     )
 
 
 def parse_bloomberg_tin():
     return _parse_bloomberg_quote(
-        BLOOMBERG_TIN_URL, "LMSNDS03:COM", "Timah", "Tin"
+        BLOOMBERG_TIN_URL, "LMSNDS03:COM", "Timah"
     )
 
 
@@ -653,7 +659,7 @@ def parse_bloomberg_agriculture():
         return {}
 
 
-def parse_instrument_page(url, label, code_name):
+def parse_instrument_page(url, source_label, report_label):
     result = {}
     try:
         resp = fetch(url)
@@ -690,7 +696,7 @@ def parse_instrument_page(url, label, code_name):
                             "low": str(price.get("low", "")),
                             "open": str(price.get("open", "")),
                             "prev_close": str(price.get("lastClose", "")),
-                            "source": label,
+                            "source": source_label,
                         }
                         break
                 if not result:
@@ -702,18 +708,21 @@ def parse_instrument_page(url, label, code_name):
                                 "close": str(q["last"]),
                                 "change": str(q.get("change", "")),
                                 "change_pct": str(q.get("changePct", "")),
-                                "source": label,
+                                "source": source_label,
                             }
                 break
     except Exception as e:
-        print(f"  WARN {label}: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
-    return {code_name: result} if result else {}
+        print(
+            f"  WARN {source_label}: {type(e).__name__}: {str(e)[:60]}",
+            file=sys.stderr,
+        )
+    return {report_label: result} if result else {}
 
 
 # ──────────────── YAHOO FINANCE ────────────────
 
 
-def parse_yahoo_finance(ticker, code_name):
+def parse_yahoo_finance(ticker, report_label):
     result = {}
     try:
         url = f"https://finance.yahoo.com/quote/{ticker}/"
@@ -783,7 +792,7 @@ def parse_yahoo_finance(ticker, code_name):
                 except ValueError:
                     pass
             result = {
-                code_name: {
+                report_label: {
                     "close": price,
                     "change": valid_change,
                     "change_pct": valid_pct,
@@ -792,7 +801,7 @@ def parse_yahoo_finance(ticker, code_name):
             }
     except Exception as e:
         print(
-            f"  WARN {code_name} (Yahoo): {type(e).__name__}: {str(e)[:60]}",
+            f"  WARN {report_label} (Yahoo): {type(e).__name__}: {str(e)[:60]}",
             file=sys.stderr,
         )
     return result
@@ -801,21 +810,21 @@ def parse_yahoo_finance(ticker, code_name):
 def parse_yahoo_sector_indices():
     result = {}
     sectors = [
-        ("IDXEnergy", "IDXENERGY.JK"),
-        ("IDX BscMat", "IDXBASIC.JK"),
-        ("IDXIndst", "IDXINDUST.JK"),
-        ("IDXNONCYC", "IDXNONCYC.JK"),
-        ("IDXHlthcare", "IDXHEALTH.JK"),
-        ("IDXCYCLC", "IDXCYCLIC.JK"),
-        ("IDX Tech", "IDXTECHNO.JK"),
-        ("IDX Transprt", "IDXTRANS.JK"),
-        ("IDX Infra", "IDXINFRA.JK"),
+        ("IDX Energy", "IDXENERGY.JK"),
+        ("IDX Basic Materials", "IDXBASIC.JK"),
+        ("IDX Industrial", "IDXINDUST.JK"),
+        ("IDX Consumer Non-Cyclical", "IDXNONCYC.JK"),
+        ("IDX Healthcare", "IDXHEALTH.JK"),
+        ("IDX Consumer Cyclical", "IDXCYCLIC.JK"),
+        ("IDX Technology", "IDXTECHNO.JK"),
+        ("IDX Transportation", "IDXTRANS.JK"),
+        ("IDX Infrastructure", "IDXINFRA.JK"),
         ("IDX Finance", "IDXFINANCE.JK"),
         ("IDX Banking", "INFOBANK15.JK"),
     ]
-    for name, ticker in sectors:
+    for report_label, ticker in sectors:
         try:
-            parsed = parse_yahoo_finance(ticker, name)
+            parsed = parse_yahoo_finance(ticker, report_label)
             if parsed and isinstance(parsed, dict):
                 result.update(parsed)
         except Exception as e:
@@ -1160,10 +1169,7 @@ def parse_barchart_coal():
     result = {}
     contract_months = _barchart_contract_months()
 
-    for root_name, root_sym, label in [
-        ("Newcastle", "LQ", "Coal(Nwl)"),
-        ("Rotterdam", "LU", "Coal(Rot)"),
-    ]:
+    for label, root_sym in [("Newcastle", "LQ"), ("Rotterdam", "LU")]:
         contracts = []
         for month_name, code, contract_year in contract_months:
             sym = f"{root_sym}{code}{contract_year:02d}"
@@ -1340,40 +1346,40 @@ MAJOR_INDEX_KEYS = (
     "HSI",
     "KOSPI",
 )
-IDX_INDEX_KEYS = ("IDX", "LQ45", "IDX Kompas 100", "IDX30")
+IDX_INDEX_KEYS = ("IDX", "LQ45", "Kompas 100", "IDX30")
 IDX_SECTOR_KEYS = (
-    "IDXEnergy",
-    "IDX BscMat",
-    "IDXIndst",
-    "IDXNONCYC",
-    "IDXHlthcare",
-    "IDXCYCLC",
-    "IDX Tech",
-    "IDX Transprt",
-    "IDX Infra",
+    "IDX Energy",
+    "IDX Basic Materials",
+    "IDX Industrial",
+    "IDX Consumer Non-Cyclical",
+    "IDX Healthcare",
+    "IDX Consumer Cyclical",
+    "IDX Technology",
+    "IDX Transportation",
+    "IDX Infrastructure",
     "IDX Finance",
     "IDX Banking",
 )
 COMMODITY_FUTURES_KEYS = (
-    "Oil(WT)",
-    "Oil(Brn)",
-    "Ntrl Gas",
+    "Oil WTI",
+    "Oil Brent",
+    "Nat Gas",
     "Aluminium",
     "Nickel",
 )
 US_BOND_KEYS = ("US2Yr", "US5Yr", "US10Yr", "US30Yr")
 REQUESTED_SOURCE_BY_KEY = {
-    "IDR": "Bloomberg",
+    "USD/IDR": "Bloomberg",
     "Gold": "Bloomberg",
-    "Gold(Spot)": "Bloomberg",
+    "Gold (XAU/USD)": "Bloomberg",
     "Silver": "Bloomberg",
     "Copper": "Bloomberg",
-    "USDIndx": "Bloomberg",
-    "Euro": "Bloomberg",
+    "DXY": "Bloomberg",
+    "EUR/USD": "Bloomberg",
     "Timah": "Bloomberg",
     "Corn": "Bloomberg",
     "Wheat": "Bloomberg",
-    "SoybeanOil": "Bloomberg",
+    "Soybean Oil": "Bloomberg",
     "Ammonia": "SunSirs",
     "IndoCDS 5yr": "WorldGovernmentBonds",
     "CPO": "Bursa Malaysia",
@@ -1448,7 +1454,7 @@ def collect_data(
         ),
     ]
     tasks = [
-        ("Coal from Barchart", parse_barchart_coal, ("Coal(Nwl)", "Coal(Rot)")),
+        ("Coal from Barchart", parse_barchart_coal, ("Newcastle", "Rotterdam")),
         ("IDX Sector Indices", parse_yahoo_sector_indices, IDX_SECTOR_KEYS),
         ("JISDOR", parse_jisdor, ("Jisdor",)),
         (
@@ -1485,29 +1491,29 @@ def collect_data(
         ),
         ("SunSirs Woodpulp", parse_sunsirs_woodpulp, ("Woodpulp",)),
         ("Commodities", parse_commodities_futures, COMMODITY_FUTURES_KEYS),
-        ("Bloomberg USD/IDR", parse_bloomberg_usdidr, ("IDR",)),
-        ("Bloomberg DXY", parse_bloomberg_dxy, ("USDIndx",)),
-        ("Bloomberg EUR/USD", parse_bloomberg_eurusd, ("Euro",)),
+        ("Bloomberg USD/IDR", parse_bloomberg_usdidr, ("USD/IDR",)),
+        ("Bloomberg DXY", parse_bloomberg_dxy, ("DXY",)),
+        ("Bloomberg EUR/USD", parse_bloomberg_eurusd, ("EUR/USD",)),
         ("Bloomberg Tin", parse_bloomberg_tin, ("Timah",)),
         (
             "Bloomberg Metals",
             parse_bloomberg_metals,
-            ("Gold", "Gold(Spot)", "Silver", "Copper"),
+            ("Gold", "Gold (XAU/USD)", "Silver", "Copper"),
         ),
         (
             "Bloomberg Agriculture",
             parse_bloomberg_agriculture,
-            ("Corn", "Wheat", "SoybeanOil"),
+            ("Corn", "Wheat", "Soybean Oil"),
         ),
         *[
             (
                 label,
-                lambda url=url, label=label, code=code: parse_instrument_page(
-                    url, label, code
+                lambda url=url, label=label, report_label=report_label: (
+                    parse_instrument_page(url, label, report_label)
                 ),
-                (code,),
+                (report_label,),
             )
-            for label, url, code in single_pages
+            for label, url, report_label in single_pages
         ],
         (
             "US Bonds",
@@ -1529,11 +1535,13 @@ def collect_data(
         ("PHEI (ICBI + Indo10Yr)", parse_phei, ("ICBI", "Indo10Yr")),
         *[
             (
-                code,
-                lambda ticker=ticker, code=code: parse_yahoo_finance(ticker, code),
-                (code,),
+                report_label,
+                lambda ticker=ticker, report_label=report_label: parse_yahoo_finance(
+                    ticker, report_label
+                ),
+                (report_label,),
             )
-            for ticker, code in [
+            for ticker, report_label in [
                 ("EIDO", "EIDO"),
                 ("EEM", "EEM"),
                 ("TLK", "TLKM"),

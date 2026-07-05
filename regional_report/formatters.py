@@ -140,8 +140,8 @@ def format_report(data, market_news=None):
     """Build the full report text."""
     lines = []
 
-    def kv(key, *, suppress_bad_point=True, decorate=True, **fmt_options):
-        d = data.get(key)
+    def kv(label, *, suppress_bad_point=True, decorate=True, **fmt_options):
+        d = data.get(label)
         if d is None:
             return None
         if isinstance(d, dict) and not is_valid_data(d):
@@ -151,14 +151,14 @@ def format_report(data, market_news=None):
             return None
         return decorate_value(d, value) if decorate else value
 
-    def add_line(label, key, *, label_prefix="", **options):
-        value = kv(key, **options)
+    def add_line(label, **options):
+        value = kv(label, **options)
         if value:
-            lines.append(f"- **{label_prefix}{label}:** {value}")
+            lines.append(f"- **{label}:** {value}")
 
-    def add_group(items, *, label_prefix="", **options):
-        for key, label in items:
-            add_line(label, key, label_prefix=label_prefix, **options)
+    def add_group(labels, **options):
+        for label in labels:
+            add_line(label, **options)
 
     now = datetime.now()
     hari = [
@@ -210,86 +210,77 @@ def format_report(data, market_news=None):
     lines.append("## \U0001f1fa\U0001f1f8 US Indices")
     add_group(
         [
-            ("Dow", "Dow"),
-            ("S&P 500", "S&P 500"),
-            ("Nasdaq", "Nasdaq"),
-            ("S&P 500 VIX", "S&P 500 VIX"),
+            "Dow",
+            "S&P 500",
+            "Nasdaq",
+            "S&P 500 VIX",
         ]
     )
     lines.append("")
 
     lines.append("## \U0001f1ea\U0001f1fa Europe")
-    add_group([("DAX", "DAX"), ("FTSE", "FTSE"), ("CAC", "CAC")])
+    add_group(["DAX", "FTSE", "CAC"])
     lines.append("")
 
     lines.append("## \U0001f30f Asia")
     add_group(
         [
-            ("Nikkei", "Nikkei"),
-            ("Shanghai", "Shanghai"),
-            ("HSI", "HSI"),
-            ("KOSPI", "KOSPI"),
-            ("STI", "STI"),
+            "Nikkei",
+            "Shanghai",
+            "HSI",
+            "KOSPI",
+            "STI",
         ]
     )
     lines.append("")
 
     lines.append("## \U0001f1ee\U0001f1e9 Indonesia")
-    add_line("IDX", "IDX")
+    add_line("IDX")
     add_group(
         [
-            ("LQ45", "LQ45"),
-            ("IDX Kompas 100", "Kompas 100"),
-            ("IDX30", "IDX30"),
+            "LQ45",
+            "Kompas 100",
+            "IDX30",
         ]
     )
     add_group(
         [
-            ("IDXEnergy", "Energy"),
-            ("IDX BscMat", "Basic Materials"),
-            ("IDXIndst", "Industrial"),
-            ("IDX Tech", "Technology"),
-            ("IDX Finance", "Finance"),
-            ("IDX Banking", "Banking"),
-            ("IDX Infra", "Infrastructure"),
-            ("IDX Property", "Property"),
-            ("IDX Transprt", "Transportation"),
-            ("IDXCYCLC", "Consumer Cyclical"),
-            ("IDXNONCYC", "Consumer Non-Cyclical"),
-            ("IDXHlthcare", "Healthcare"),
-        ],
-        label_prefix="IDX ",
+            "IDX Energy",
+            "IDX Basic Materials",
+            "IDX Industrial",
+            "IDX Technology",
+            "IDX Finance",
+            "IDX Banking",
+            "IDX Infrastructure",
+            "IDX Property",
+            "IDX Transportation",
+            "IDX Consumer Cyclical",
+            "IDX Consumer Non-Cyclical",
+            "IDX Healthcare",
+        ]
     )
     lines.append("")
 
-    add_line("USD/IDR", "IDR", suppress_bad_point=False)
-    add_line("Jisdor", "Jisdor")
-    add_line("Indo10Yr", "Indo10Yr", suffix="%", suffix_numeric_only=True)
-    add_line("ICBI", "ICBI", suppress_bad_point=False)
-    add_line("IndoCDS 5yr", "IndoCDS 5yr", suppress_bad_point=False)
+    add_line("USD/IDR", suppress_bad_point=False)
+    add_line("Jisdor")
+    add_line("Indo10Yr", suffix="%", suffix_numeric_only=True)
+    add_line("ICBI", suppress_bad_point=False)
+    add_line("IndoCDS 5yr", suppress_bad_point=False)
     lines.append("")
 
     lines.append("## \U0001f4b5 FX & Bonds")
-    add_line("EUR/USD", "Euro", suppress_bad_point=False)
+    add_line("EUR/USD", suppress_bad_point=False)
 
-    dxy = data.get("USDIndx")
-    if isinstance(dxy, dict) and is_valid_data(dxy):
-        dxy_fmt = fmt(dxy, suppress_bad_point=False)
-        if dxy_fmt:
-            lines.append(f"- **DXY:** {dxy_fmt}")
+    add_line("DXY", suppress_bad_point=False, decorate=False)
 
-    us_bonds = [
-        ("US2Yr", "US2Yr"),
-        ("US10Yr", "US10Yr"),
-        ("US30Yr", "US30Yr"),
-    ]
+    us_bonds = ["US2Yr", "US10Yr", "US30Yr"]
     if any(
-        isinstance(data.get(key), dict) and is_valid_data(data.get(key))
-        for key, _ in us_bonds
+        isinstance(data.get(label), dict) and is_valid_data(data.get(label))
+        for label in us_bonds
     ):
         lines.append("- **US Treasuries:**")
-        for key, label in us_bonds:
-            d = data.get(key)
+        for label in us_bonds:
+            d = data.get(label)
             if isinstance(d, dict) and is_valid_data(d):
                 value = decorate_value(
                     d, fmt(d, suffix="%", suffix_numeric_only=True)
@@ -299,17 +290,12 @@ def format_report(data, market_news=None):
     lines.append("")
 
     lines.append("## \U0001f6e2\ufe0f Energy")
-    for key, label in [
-        ("Oil(WT)", "Oil WTI"),
-        ("Oil(Brn)", "Oil Brent"),
-        ("Ntrl Gas", "Nat Gas"),
-    ]:
-        add_line(label, key, prefix="$")
+    add_group(["Oil WTI", "Oil Brent", "Nat Gas"], prefix="$")
     lines.append("")
 
     lines.append("### Coal (Barchart) \U0001f504")
-    for key, label in [("Coal(Nwl)", "Newcastle"), ("Coal(Rot)", "Rotterdam")]:
-        coal = data.get(key)
+    for label in ["Newcastle", "Rotterdam"]:
+        coal = data.get(label)
         if isinstance(coal, dict) and coal.get("contracts"):
             lines.append(f"- **{label}:**")
             for contract in coal["contracts"]:
@@ -325,43 +311,31 @@ def format_report(data, market_news=None):
     lines.append("")
 
     lines.append("## \U0001f3d7\ufe0f Metals & Mining")
-    add_line("Gold", "Gold")
-    gold_spot = data.get("Gold(Spot)")
+    add_line("Gold")
+    gold_spot = data.get("Gold (XAU/USD)")
     if isinstance(gold_spot, dict) and is_valid_data(gold_spot):
-        add_line("Gold", "Gold(Spot)")
-        lines.append("     (XAU/USD)")
+        add_line("Gold (XAU/USD)")
     add_group(
         [
-            ("Silver", "Silver"),
-            ("Copper", "Copper"),
-            ("Nickel", "Nickel"),
-            ("Timah", "Timah"),
-            ("Aluminium", "Aluminium"),
-            ("Iron Ore 62%", "Iron Ore 62%"),
-            ("BCOMIN", "BCOMIN"),
+            "Silver",
+            "Copper",
+            "Nickel",
+            "Timah",
+            "Aluminium",
+            "Iron Ore 62%",
+            "BCOMIN",
         ]
     )
     lines.append("")
 
     lines.append("## \U0001f33f Komoditas Lain")
-    for key, label in [
-        ("CPO", "CPO"),
-        ("Woodpulp", "Woodpulp"),
-        ("Ammonia", "Ammonia"),
-        ("Corn", "Corn"),
-        ("Wheat", "Wheat"),
-        ("SoybeanOil", "Soybean Oil"),
-    ]:
-        value = kv(key)
-        if not value:
-            continue
-        lines.append(f"- **{label}:** {value}")
+    add_group(["CPO", "Woodpulp", "Ammonia", "Corn", "Wheat", "Soybean Oil"])
     lines.append("")
 
     lines.append("## \U0001f4c8 ETFs & Stocks")
-    for key, label in [("EIDO", "EIDO"), ("TLKM", "TLKM"), ("EEM", "EEM")]:
-        add_line(label, key, suppress_bad_point=False)
-        if key == "TLKM":
+    for label in ["EIDO", "TLKM", "EEM"]:
+        add_line(label, suppress_bad_point=False)
+        if label == "TLKM":
             tlkm_idr = _tlkm_idr_equivalent(data)
             if tlkm_idr is not None:
                 lines.append(f"        ({tlkm_idr})")
