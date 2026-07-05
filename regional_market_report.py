@@ -137,7 +137,8 @@ def main(argv=None):
         timestamp = cache_raw.get("timestamp", "")
     else:
         data, sources, timestamp = collect_data(
-            cache_raw=cache_raw if partial_cache_mode else None
+            cache_raw=cache_raw if partial_cache_mode else None,
+            comparison_cache_raw=cache_raw,
         )
         if partial_cache_mode:
             raw_out = _merge_partial_cache(cache_raw, data, sources, timestamp)

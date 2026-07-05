@@ -373,25 +373,74 @@ class RequestedSourceParserTests(unittest.TestCase):
         requested_codes = [call.args[1] for call in yahoo.call_args_list]
         self.assertNotIn("IDX Property", requested_codes)
 
-    def test_indonesia_cds_uses_previous_daily_quote(self):
+    def test_indonesia_cds_uses_cached_previous_business_day(self):
         payload = {
             "success": True,
             "result": {
                 "ultimoValore": "90.00",
                 "change1mAbs": "-7.50",
                 "quote": {
-                    "1": {"DATA_VAL": "2026-06-26", "CLOSE_VAL": 88.0},
-                    "2": {"DATA_VAL": "2026-06-27", "CLOSE_VAL": 89.0},
-                    "3": {"DATA_VAL": "2026-06-28", "CLOSE_VAL": 90.0},
+                    "1": {"DATA_VAL": "2026-06-29", "CLOSE_VAL": 88.0},
+                    "2": {"DATA_VAL": "2026-06-30", "CLOSE_VAL": 89.0},
+                    "3": {"DATA_VAL": "2026-07-01", "CLOSE_VAL": 90.0},
                 },
             },
         }
-        item = parse_indonesia_cds_payload(payload)["IndoCDS 5yr"]
+        cached = {
+            "close": "88.00",
+            "date": "2026-06-30",
+            "source": "Investing CDS",
+        }
+        item = parse_indonesia_cds_payload(payload, cached)["IndoCDS 5yr"]
         self.assertEqual(item["close"], "90.00")
-        self.assertEqual(item["change"], "+1.00")
-        self.assertEqual(item["change_pct"], "+1.12%")
-        self.assertEqual(item["previous_date"], "2026-06-27")
+        self.assertEqual(item["change"], "+2.00")
+        self.assertEqual(item["change_pct"], "+2.27%")
+        self.assertEqual(item["previous_date"], "2026-06-30")
         self.assertNotEqual(item["change_pct"], payload["result"]["change1mAbs"])
+
+    def test_indonesia_cds_monday_uses_cached_friday_and_ignores_weekend(self):
+        payload = {
+            "success": True,
+            "result": {
+                "quote": {
+                    "1": {"DATA_VAL": "2026-06-28", "CLOSE_VAL": 99.0},
+                    "2": {"DATA_VAL": "2026-06-29", "CLOSE_VAL": 90.0},
+                }
+            },
+        }
+        cached = {
+            "close": "89.00",
+            "date": "2026-06-26",
+            "source": "WorldGovernmentBonds",
+        }
+        item = parse_indonesia_cds_payload(payload, cached)["IndoCDS 5yr"]
+        self.assertEqual(item["close"], "90.00")
+        self.assertEqual(item["date"], "2026-06-29")
+        self.assertEqual(item["previous_date"], "2026-06-26")
+        self.assertEqual(item["change"], "+1.00")
+        self.assertEqual(item["source"], "WorldGovernmentBonds")
+        self.assertEqual(
+            REQUESTED_SOURCE_BY_KEY["IndoCDS 5yr"], "WorldGovernmentBonds"
+        )
+
+    def test_indonesia_cds_ignores_cache_that_is_not_previous_business_day(self):
+        payload = {
+            "success": True,
+            "result": {
+                "quote": {
+                    "1": {"DATA_VAL": "2026-06-30", "CLOSE_VAL": 90.0},
+                }
+            },
+        }
+        cached = {
+            "close": "89.00",
+            "date": "2026-06-28",
+            "source": "WorldGovernmentBonds",
+        }
+        item = parse_indonesia_cds_payload(payload, cached)["IndoCDS 5yr"]
+        self.assertEqual(item["change"], "")
+        self.assertEqual(item["change_pct"], "")
+        self.assertEqual(item["previous_date"], "")
 
     def test_gold_whatsapp_layout(self):
         data = {

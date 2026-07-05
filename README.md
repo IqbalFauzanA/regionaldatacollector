@@ -217,9 +217,8 @@ and the modules under `regional_report\`.
 
 - Google News RSS supplies the live market headlines.
 - Bank Indonesia supplies Jisdor data.
-- WorldGovernmentBonds supplies IndoCDS data through
-  `/wp-json/common/v1/historical`; its daily move is calculated from the latest
-  two distinct dates in the raw quote series, not the page's monthly change.
+- WorldGovernmentBonds supplies IndoCDS data. Its daily move compares the live
+  value with the cached prior business day (Monday compares with Friday).
 - Barchart supplies Newcastle and Rotterdam coal futures.
 - Bursa Malaysia supplies CPO data.
 - Bloomberg supplies USD/IDR, EUR/USD, DXY, Gold (Comex and spot), silver,

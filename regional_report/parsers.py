@@ -5,7 +5,7 @@ import logging
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, cast
 from xml.etree import ElementTree as ET
 
@@ -346,7 +346,12 @@ def parse_commodities_futures():
             # A compact sidebar table only has Last and Chg. %, so it cannot
             # supply the absolute move. Accept only the full futures table;
             # missing instruments are handled by the instrument-page fallback.
-            if not name_idx or not last_idx or not chg_idx or not pct_idx:
+            if (
+                name_idx is None
+                or last_idx is None
+                or chg_idx is None
+                or pct_idx is None
+            ):
                 continue
 
             def _normalize_name(n: str) -> str:
@@ -853,8 +858,15 @@ def parse_indonesia_bonds():
 # ──────────────── CDS ────────────────
 
 
-def parse_indonesia_cds_payload(data):
-    """Calculate Indonesia 5Y CDS change from the latest two dated quotes."""
+def _previous_business_day(value):
+    previous = value - timedelta(days=1)
+    while previous.weekday() >= 5:
+        previous -= timedelta(days=1)
+    return previous
+
+
+def parse_indonesia_cds_payload(data, cached_item=None):
+    """Parse Indonesia 5Y CDS and compare it with the cached prior weekday."""
     if not isinstance(data, dict) or not data.get("success"):
         return {}
     result = data.get("result", {})
@@ -862,7 +874,7 @@ def parse_indonesia_cds_payload(data):
     if not isinstance(quotes, dict):
         return {}
 
-    # Keep the last observation for each date, then compare distinct dates.
+    # Keep the last weekday observation for each date.
     by_date = {}
     for quote in quotes.values():
         if not isinstance(quote, dict):
@@ -876,26 +888,48 @@ def parse_indonesia_cds_payload(data):
         except (TypeError, ValueError):
             continue
         if date:
-            by_date[date] = value
+            try:
+                quote_date = datetime.strptime(date, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            # The source can repeat Friday's value across the weekend.
+            if quote_date.weekday() < 5:
+                by_date[quote_date] = value
     dates = sorted(by_date)
     if not dates:
         return {}
 
-    latest_date = dates[-1]
-    latest = by_date[latest_date]
-    close = str(result.get("ultimoValore") or f"{latest:.2f}")
+    latest_day = dates[-1]
+    latest_date = latest_day.isoformat()
+    latest = by_date[latest_day]
+    close = f"{latest:.2f}"
     change = ""
     change_pct = ""
     previous_close = ""
     previous_date = ""
-    if len(dates) > 1:
-        previous_date = dates[-2]
-        previous = by_date[previous_date]
-        difference = latest - previous
-        percent = (difference / previous * 100) if previous else 0.0
-        previous_close = f"{previous:.4f}"
-        change = f"{difference:+.2f}"
-        change_pct = f"{percent:+.2f}%"
+    if isinstance(cached_item, dict):
+        cached_date = str(cached_item.get("date", ""))
+        if (
+            cached_date == latest_date
+            and cached_item.get("source") == "WorldGovernmentBonds"
+        ):
+            # Preserve the move on same-market-day reruns.
+            change = str(cached_item.get("change", ""))
+            change_pct = str(cached_item.get("change_pct", ""))
+            previous_close = str(cached_item.get("previous_close", ""))
+            previous_date = str(cached_item.get("previous_date", ""))
+        elif cached_date == _previous_business_day(latest_day).isoformat():
+            try:
+                previous = float(str(cached_item.get("close", "")).replace(",", ""))
+            except (TypeError, ValueError):
+                previous = None
+            if previous is not None:
+                difference = latest - previous
+                percent = (difference / previous * 100) if previous else 0.0
+                previous_close = f"{previous:.2f}"
+                previous_date = cached_date
+                change = f"{difference:+.2f}"
+                change_pct = f"{percent:+.2f}%"
 
     return {
         "IndoCDS 5yr": {
@@ -910,7 +944,7 @@ def parse_indonesia_cds_payload(data):
     }
 
 
-def parse_indonesia_cds():
+def parse_indonesia_cds(cached_item=None):
     try:
         payload = {
             "GLOBALVAR": {
@@ -950,7 +984,7 @@ def parse_indonesia_cds():
             timeout=20,
         )
 
-        return parse_indonesia_cds_payload(resp.json())
+        return parse_indonesia_cds_payload(resp.json(), cached_item=cached_item)
     except Exception as e:
         print(f"  WARN IndoCDS: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
         return {}
@@ -1341,12 +1375,17 @@ REQUESTED_SOURCE_BY_KEY = {
     "Wheat": "Bloomberg",
     "SoybeanOil": "Bloomberg",
     "Ammonia": "SunSirs",
+    "IndoCDS 5yr": "WorldGovernmentBonds",
     "CPO": "Bursa Malaysia",
     "KOSPI": "KOSPI 50",
 }
 
 
-def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
+def collect_data(
+    cache_raw=None,
+    cache_max_age_seconds=CACHE_MAX_AGE_SECONDS,
+    comparison_cache_raw=None,
+):
     """Run all scrapers, return (data_dict, sources_list, timestamp)."""
     DATA = {}
 
@@ -1356,6 +1395,13 @@ def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
     cached_data = (
         cache_raw.get("data", {})
         if isinstance(cache_raw, dict) and isinstance(cache_raw.get("data"), dict)
+        else {}
+    )
+    comparison_cache_raw = comparison_cache_raw or cache_raw
+    comparison_cached_data = (
+        comparison_cache_raw.get("data", {})
+        if isinstance(comparison_cache_raw, dict)
+        and isinstance(comparison_cache_raw.get("data"), dict)
         else {}
     )
     cache_now = datetime.now()
@@ -1493,7 +1539,13 @@ def collect_data(cache_raw=None, cache_max_age_seconds=CACHE_MAX_AGE_SECONDS):
                 ("TLK", "TLKM"),
             ]
         ],
-        ("IndoCDS", parse_indonesia_cds, ("IndoCDS 5yr",)),
+        (
+            "IndoCDS",
+            lambda: parse_indonesia_cds(
+                comparison_cached_data.get("IndoCDS 5yr")
+            ),
+            ("IndoCDS 5yr",),
+        ),
         ("SunSirs Ammonia", parse_ammonia, ("Ammonia",)),
         ("IDX Property", parse_yahoo_idx_property, ("IDX Property",)),
         ("Bursa CPO", parse_bursa_cpo, ("CPO",)),
