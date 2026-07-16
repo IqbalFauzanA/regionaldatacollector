@@ -54,10 +54,8 @@ def get_point_change(d):
     return ""
 
 
-def _change_parts(d, suppress_bad_point=False):
+def _change_parts(d):
     point = get_point_change(d)
-    if suppress_bad_point and isinstance(point, str) and point.startswith("-19"):
-        point = ""
     pct = get_change(d)
     return [part for part in (point, pct) if part]
 
@@ -68,7 +66,6 @@ def fmt(
     prefix="",
     suffix="",
     suffix_numeric_only=False,
-    suppress_bad_point=False,
 ):
     """Format a data item as close, point change, and percent change."""
     if isinstance(d, str):
@@ -93,13 +90,13 @@ def fmt(
         else:
             cp = f"{cp}{suffix}"
 
-    return " ".join([f"{prefix}{cp}", *_change_parts(d, suppress_bad_point)])
+    return " ".join([f"{prefix}{cp}", *_change_parts(d)])
 
 
 def decorate_value(d, base=None):
     """Bold large movers using the normalized percent change."""
     if base is None:
-        base = fmt(d, suppress_bad_point=True) if isinstance(d, dict) else str(d)
+        base = fmt(d) if isinstance(d, dict) else str(d)
 
     base = str(base).strip()
     if not base:
@@ -140,13 +137,13 @@ def format_report(data, market_news=None):
     """Build the full report text."""
     lines = []
 
-    def kv(label, *, suppress_bad_point=True, decorate=True, **fmt_options):
+    def kv(label, *, decorate=True, **fmt_options):
         d = data.get(label)
         if d is None:
             return None
         if isinstance(d, dict) and not is_valid_data(d):
             return None
-        value = fmt(d, suppress_bad_point=suppress_bad_point, **fmt_options)
+        value = fmt(d, **fmt_options)
         if not value:
             return None
         return decorate_value(d, value) if decorate else value
@@ -260,17 +257,17 @@ def format_report(data, market_news=None):
     )
     lines.append("")
 
-    add_line("USD/IDR", suppress_bad_point=False)
+    add_line("USD/IDR")
     add_line("Jisdor")
     add_line("Indo10Yr", suffix="%", suffix_numeric_only=True)
-    add_line("ICBI", suppress_bad_point=False)
-    add_line("IndoCDS 5yr", suppress_bad_point=False)
+    add_line("ICBI")
+    add_line("IndoCDS 5yr")
     lines.append("")
 
     lines.append("## \U0001f4b5 FX & Bonds")
-    add_line("EUR/USD", suppress_bad_point=False)
+    add_line("EUR/USD")
 
-    add_line("DXY", suppress_bad_point=False, decorate=False)
+    add_line("DXY", decorate=False)
 
     us_bonds = ["US2Yr", "US10Yr", "US30Yr"]
     if any(
@@ -303,7 +300,7 @@ def format_report(data, market_news=None):
                     "change": contract.get("change"),
                     "change_pct": contract.get("change_pct"),
                 }
-                value = decorate_value(d, fmt(d, suppress_bad_point=True))
+                value = decorate_value(d, fmt(d))
                 month = contract.get("month", "")
                 if month and value:
                     lines.append(f"  - **{month}:** {value}")
@@ -333,7 +330,7 @@ def format_report(data, market_news=None):
 
     lines.append("## \U0001f4c8 ETFs & Stocks")
     for label in ["EIDO", "TLKM", "EEM"]:
-        add_line(label, suppress_bad_point=False)
+        add_line(label)
         if label == "TLKM":
             tlkm_idr = _tlkm_idr_equivalent(data)
             if tlkm_idr is not None:

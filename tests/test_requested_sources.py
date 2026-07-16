@@ -71,6 +71,19 @@ class RequestedSourceParserTests(unittest.TestCase):
         self.assertLess(europe.index("FTSE"), europe.index("DAX"))
         self.assertLess(europe.index("DAX"), europe.index("CAC"))
 
+    def test_dow_point_change_starting_with_minus_19_is_not_hidden(self):
+        data = {
+            "Dow": {
+                "close": "52500.00",
+                "change": "-190.25",
+                "change_pct": "-0.36%",
+            }
+        }
+
+        report = format_report_whatsapp(format_report(data))
+
+        self.assertIn("*Dow:* 52500.00 -190.25 -0.36%", report)
+
     def test_table_parser_discards_rows_not_requested_by_the_report(self):
         html = """
             <table>
