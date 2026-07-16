@@ -219,7 +219,7 @@ def format_report(data, market_news=None):
     lines.append("")
 
     lines.append("## \U0001f1ea\U0001f1fa Europe")
-    add_group(["DAX", "FTSE", "CAC"])
+    add_group(["FTSE", "DAX", "CAC"])
     lines.append("")
 
     lines.append("## \U0001f30f Asia")

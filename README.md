@@ -111,7 +111,7 @@ Use `output\regional_report.pdf` as the formatted archive/shareable version.
 | Header | Greeting and current report date |
 | Market News Summary | Top 5 Google News RSS market headlines |
 | US Indices | Dow, S&P 500, Nasdaq, S&P 500 VIX |
-| Europe | DAX, FTSE, CAC |
+| Europe | FTSE, DAX, CAC |
 | Asia | Nikkei, Shanghai, HSI, KOSPI 50 |
 | Indonesia | IDX, LQ45, Kompas 100, IDX30, IDX sector indices |
 | Indonesia Rates & Credit | USD/IDR, Jisdor, Indo10Yr, ICBI, IndoCDS 5yr |

@@ -161,6 +161,57 @@ def parse_table_pages(pages, requested_keys):
     return results
 
 
+def parse_cnbc_quote_html(html, report_label):
+    """Parse a CNBC quote strip into the report's standard quote fields."""
+    soup = BeautifulSoup(html, "lxml")
+    price_el = soup.select_one(".QuoteStrip-lastPrice")
+    change_el = soup.select_one(
+        ".QuoteStrip-changeUp, .QuoteStrip-changeDown, .QuoteStrip-changeFlat"
+    )
+    if not price_el or not change_el:
+        return {}
+
+    values = [
+        span.get_text(" ", strip=True).strip().strip("()")
+        for span in change_el.find_all("span", recursive=False)
+    ]
+    values = [value for value in values if value]
+    if len(values) < 2:
+        return {}
+
+    close = clean_num(price_el.get_text(" ", strip=True))
+    change = clean_num(values[0])
+    change_pct = clean_num(values[1])
+    if not close or not change or not change_pct:
+        return {}
+    if not change_pct.endswith("%"):
+        change_pct = f"{change_pct}%"
+
+    return {
+        report_label: {
+            "close": close,
+            "change": change,
+            "change_pct": change_pct,
+            "source": "CNBC",
+        }
+    }
+
+
+def parse_cnbc_quote_pages(pages):
+    """Fetch individual CNBC quote pages and combine their parsed results."""
+    results = {}
+    for report_label, url in pages:
+        try:
+            resp = fetch(url)
+            results.update(parse_cnbc_quote_html(resp.text, report_label))
+        except Exception as e:
+            print(
+                f"  WARN CNBC {report_label}: {type(e).__name__}: {str(e)[:60]}",
+                file=sys.stderr,
+            )
+    return results
+
+
 def parse_phei():
     """ICBI + Indo10Yr from PHEI (Penilai Harga Efek Indonesia)."""
     result = {}
@@ -1325,6 +1376,15 @@ MAJOR_INDEX_KEYS = (
     "HSI",
     "KOSPI",
 )
+CNBC_US_INDEX_PAGES = (
+    ("Dow", "https://www.cnbc.com/quotes/.DJI"),
+    ("Nasdaq", "https://www.cnbc.com/quotes/.IXIC"),
+    ("S&P 500", "https://www.cnbc.com/quotes/.SPX"),
+)
+CNBC_US_INDEX_KEYS = tuple(report_label for report_label, _ in CNBC_US_INDEX_PAGES)
+INVESTING_MAJOR_INDEX_KEYS = tuple(
+    key for key in MAJOR_INDEX_KEYS if key not in CNBC_US_INDEX_KEYS
+)
 IDX_INDEX_KEYS = ("IDX", "LQ45", "Kompas 100", "IDX30")
 IDX_SECTOR_KEYS = (
     "IDX Energy",
@@ -1348,6 +1408,9 @@ COMMODITY_FUTURES_KEYS = (
 )
 US_BOND_KEYS = ("US2Yr", "US10Yr", "US30Yr")
 REQUESTED_SOURCE_BY_KEY = {
+    "Dow": "CNBC",
+    "Nasdaq": "CNBC",
+    "S&P 500": "CNBC",
     "USD/IDR": "Bloomberg",
     "Gold": "Bloomberg",
     "Gold (XAU/USD)": "Bloomberg",
@@ -1437,6 +1500,11 @@ def collect_data(
         ("IDX Sector Indices", parse_yahoo_sector_indices, IDX_SECTOR_KEYS),
         ("JISDOR", parse_jisdor, ("Jisdor",)),
         (
+            "CNBC US Indices",
+            lambda: parse_cnbc_quote_pages(CNBC_US_INDEX_PAGES),
+            CNBC_US_INDEX_KEYS,
+        ),
+        (
             "Major Indices",
             lambda: parse_table_pages(
                 [
@@ -1449,9 +1517,9 @@ def collect_data(
                         6,
                     ),
                 ],
-                MAJOR_INDEX_KEYS,
+                INVESTING_MAJOR_INDEX_KEYS,
             ),
-            MAJOR_INDEX_KEYS,
+            INVESTING_MAJOR_INDEX_KEYS,
         ),
         (
             "IDX Indices",

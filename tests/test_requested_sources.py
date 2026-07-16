@@ -13,6 +13,7 @@ from regional_report.parsers import (
     parse_bloomberg_quote_html,
     parse_bloomberg_usdidr_html,
     parse_bursa_cpo_payload,
+    parse_cnbc_quote_html,
     parse_commodities_futures,
     parse_instrument_page,
     parse_ammonia,
@@ -31,6 +32,45 @@ def next_data_html(page_props):
 
 
 class RequestedSourceParserTests(unittest.TestCase):
+    def test_cnbc_quote_html_parses_price_change_and_percent(self):
+        html = """
+            <div id="quote-page-strip">
+              <span class="QuoteStrip-lastPrice">45,295.81</span>
+              <span class="QuoteStrip-changeDown">
+                <img alt="quote price arrow down" />
+                <span>-249.07</span><span>(-0.55%)</span>
+              </span>
+            </div>
+        """
+
+        result = parse_cnbc_quote_html(html, "Dow")
+
+        self.assertEqual(
+            result["Dow"],
+            {
+                "close": "45295.81",
+                "change": "-249.07",
+                "change_pct": "-0.55%",
+                "source": "CNBC",
+            },
+        )
+        self.assertEqual(REQUESTED_SOURCE_BY_KEY["Dow"], "CNBC")
+        self.assertEqual(REQUESTED_SOURCE_BY_KEY["Nasdaq"], "CNBC")
+        self.assertEqual(REQUESTED_SOURCE_BY_KEY["S&P 500"], "CNBC")
+
+    def test_europe_report_order_is_ftse_dax_cac(self):
+        data = {
+            "DAX": {"close": "2"},
+            "FTSE": {"close": "1"},
+            "CAC": {"close": "3"},
+        }
+
+        report = format_report(data)
+
+        europe = report.split("Europe", 1)[1].split("Asia", 1)[0]
+        self.assertLess(europe.index("FTSE"), europe.index("DAX"))
+        self.assertLess(europe.index("DAX"), europe.index("CAC"))
+
     def test_table_parser_discards_rows_not_requested_by_the_report(self):
         html = """
             <table>
