@@ -570,7 +570,8 @@ class RequestedSourceParserTests(unittest.TestCase):
         }
         report = format_report_whatsapp(format_report(data))
         self.assertIn("• *Gold:* 4043.50 +27.10 +0.67%", report)
-        self.assertIn("• *Gold (XAU/USD):* 4024.1400 +19.51 +0.49%", report)
+        self.assertIn("• *Gold:* 4024.1400 +19.51 +0.49%", report)
+        self.assertIn("    _*(XAU/USD)*_", report)
         self.assertNotIn("❗", report)
 
     def test_tlkm_idr_equivalent_is_shown_below_tlkm(self):
@@ -584,7 +585,20 @@ class RequestedSourceParserTests(unittest.TestCase):
         }
         report = format_report_whatsapp(format_report(data))
         self.assertIn("• *TLKM:* 16.06 -0.04 -0.28%", report)
-        self.assertIn("        (2546)", report)
+        self.assertIn("        _(IDR2546)_", report)
+
+    def test_tlkm_idr_equivalent_bold_when_tlkm_is_bold(self):
+        data = {
+            "TLKM": {
+                "close": "16.06",
+                "change": "+0.40",
+                "change_pct": "+2.50%",
+            },
+            "Jisdor": {"close": "15,853"},
+        }
+        report = format_report_whatsapp(format_report(data))
+        self.assertIn("• *TLKM:* *16.06 +0.40 +2.50%*", report)
+        self.assertIn("        _*(IDR2546)*_", report)
 
     def test_missing_instruments_render_fetch_failed_indicator(self):
         report = format_report({})
@@ -592,7 +606,7 @@ class RequestedSourceParserTests(unittest.TestCase):
         self.assertIn("- **EUR/USD:** [Fetch Failed]", report)
         self.assertIn("- **DXY:** [Fetch Failed]", report)
         self.assertIn("- **Gold:** [Fetch Failed]", report)
-        self.assertIn("- **Gold (XAU/USD):** [Fetch Failed]", report)
+        self.assertIn("    _**(XAU/USD)**_", report)
         self.assertIn("- **Timah:** [Fetch Failed]", report)
         self.assertIn("- **Newcastle:** [Fetch Failed]", report)
         self.assertIn("  - **US2Yr:** [Fetch Failed]", report)
@@ -601,6 +615,7 @@ class RequestedSourceParserTests(unittest.TestCase):
         report = format_report_whatsapp(format_report({}))
         self.assertIn("• *USD/IDR:* [Fetch Failed]", report)
         self.assertIn("• *Gold:* [Fetch Failed]", report)
+        self.assertIn("    _*(XAU/USD)*_", report)
         self.assertIn("  • *US2Yr:* [Fetch Failed]", report)
 
     def test_valid_instruments_render_normally_alongside_failed(self):

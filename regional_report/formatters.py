@@ -311,7 +311,12 @@ def format_report(data, market_news=None):
 
     lines.append("## \U0001f3d7\ufe0f Metals & Mining")
     add_line("Gold")
-    add_line("Gold (XAU/USD)")
+    xau_val = kv("Gold (XAU/USD)")
+    if xau_val:
+        lines.append(f"- **Gold:** {xau_val}")
+    else:
+        lines.append("- **Gold:** [Fetch Failed]")
+    lines.append("    _**(XAU/USD)**_")
     add_group(
         [
             "Silver",
@@ -335,7 +340,12 @@ def format_report(data, market_news=None):
         if label == "TLKM":
             tlkm_idr = _tlkm_idr_equivalent(data)
             if tlkm_idr is not None:
-                lines.append(f"        ({tlkm_idr})")
+                tlkm_val = kv("TLKM")
+                tlkm_is_bold = bool(tlkm_val and "**" in tlkm_val)
+                if tlkm_is_bold:
+                    lines.append(f"        _**(IDR{tlkm_idr})**_")
+                else:
+                    lines.append(f"        _(IDR{tlkm_idr})_")
 
     lines.append("---")
     lines.append("## Footer")

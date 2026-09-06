@@ -194,6 +194,20 @@ def save_report_pdf(report):
             story.append(Paragraph(txt, bullet_styles[level], bulletText="\u2022"))
             continue
 
+        indent_len = len(line) - len(stripped)
+        if indent_len > 0:
+            indent_style_key = f"indent_{indent_len}"
+            if indent_style_key not in styles:
+                styles[indent_style_key] = ParagraphStyle(
+                    indent_style_key,
+                    parent=styles["body"],
+                    leftIndent=14 + (indent_len // 2) * 4,
+                    spaceAfter=2,
+                )
+            txt = markdown_inline_to_reportlab(stripped)
+            story.append(Paragraph(txt, styles[indent_style_key]))
+            continue
+
         style = (
             styles["italic"]
             if stripped.startswith("_") and stripped.endswith("_")
