@@ -204,3 +204,8 @@ Parsed instrument data is stored as a dictionary of key-value pairs in `data`:
    - Automated delivery (Telegram/WhatsApp bots) reads exclusively from `output\regional_report_whatsapp.txt`.
    - Never write progress logs or debug messages to `stdout` without redirecting them to `stderr` (`file=sys.stderr`).
 4. **Git Hygiene**: Never check in files in `cache/`, `output/`, `build/`, `dist/`, or `.spec` files unless explicitly requested.
+5. **Source Links and Data Providers Are Absolute**:
+   - All data sources and URLs specified in `REQUESTED_SOURCE_BY_KEY` and parser modules are **absolute and non-negotiable** unless explicitly instructed otherwise.
+   - If an authoritative provider blocks requests (e.g. Bloomberg returning HTTP 403), **never** swap out or substitute the provider with an alternative source (e.g. Yahoo Finance, Investing.com) just to retrieve a valid value.
+   - It is **expected and preferred** to leave the instrument as `[Fetch Failed]` rather than switching to an unauthorized provider.
+   - Only implement fixes if there is a viable workaround that preserves and continues using the **exact same source** (e.g. adjusting headers, TLS impersonation, or fixing DOM selectors on that domain).
