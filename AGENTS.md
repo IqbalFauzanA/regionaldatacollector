@@ -209,3 +209,7 @@ Parsed instrument data is stored as a dictionary of key-value pairs in `data`:
    - If an authoritative provider blocks requests (e.g. Bloomberg returning HTTP 403), **never** swap out or substitute the provider with an alternative source (e.g. Yahoo Finance, Investing.com) just to retrieve a valid value.
    - It is **expected and preferred** to leave the instrument as `[Fetch Failed]` rather than switching to an unauthorized provider.
    - Only implement fixes if there is a viable workaround that preserves and continues using the **exact same source** (e.g. adjusting headers, TLS impersonation, or fixing DOM selectors on that domain).
+6. **No Dead or Unreachable Code (Verify Applied Edits)**:
+   - When editing code, always inspect the applied changes via `git diff` or `view_file` to ensure tool replacements do not leave behind unreachable statements (e.g. early `return` preceding log/exception statements, duplicate checks, or orphaned code blocks).
+   - Code must remain clean, reachable, and free of dead logic.
+

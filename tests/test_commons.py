@@ -31,6 +31,29 @@ class FetchTests(unittest.TestCase):
 
         self.assertEqual(acquired_during_backoff, [True])
 
+    def test_fetch_raises_on_http_202_waf_challenge(self):
+        waf_resp = SimpleNamespace(
+            status_code=202,
+            text="<script>window.awsWafCookieDomainList=['barchart.com'];</script>",
+        )
+        with (
+            patch("regional_report.commons.req.get", return_value=waf_resp),
+            patch("regional_report.commons.time.sleep"),
+        ):
+            with self.assertRaises(Exception) as ctx:
+                fetch("https://www.barchart.com/test", max_retries=1)
+            self.assertIn("HTTP 202 (AWS WAF Challenge)", str(ctx.exception))
+
+    def test_fetch_raises_on_non_200_status(self):
+        err_resp = SimpleNamespace(status_code=500, text="Internal Server Error")
+        with (
+            patch("regional_report.commons.req.get", return_value=err_resp),
+            patch("regional_report.commons.time.sleep"),
+        ):
+            with self.assertRaises(Exception) as ctx:
+                fetch("https://example.com", max_retries=1)
+            self.assertIn("HTTP 500", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

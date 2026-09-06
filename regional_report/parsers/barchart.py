@@ -46,6 +46,7 @@ def _barchart_contract_months(as_of=None, count=4):
 def parse_barchart_coal():
     result = {}
     contract_months = _barchart_contract_months()
+    last_error = None
 
     for label, root_sym in [("Newcastle", "LQ"), ("Rotterdam", "LU")]:
         contracts = []
@@ -57,6 +58,7 @@ def parse_barchart_coal():
                 resp = fetch(
                     f"https://www.barchart.com/futures/quotes/{sym}/overview",
                     timeout=20,
+                    max_retries=2,
                 )
                 soup = BeautifulSoup(resp.text, "lxml")
                 tables = soup.find_all("table")
@@ -96,11 +98,22 @@ def parse_barchart_coal():
                         break
             except Exception as e:
                 logger.debug("parse_barchart_coal page exception for %s: %s", sym, e)
+                last_error = e
+                if "AWS WAF Challenge" in str(e):
+                    logger.warning(
+                        "Barchart blocked by AWS WAF Challenge (HTTP 202) for %s", sym
+                    )
+                    break
 
         if contracts:
             result[label] = {
                 "contracts": contracts,
                 "source": "Barchart",
             }
+        elif last_error and "AWS WAF Challenge" in str(last_error):
+            break
+
+    if not result and last_error:
+        raise last_error
 
     return result

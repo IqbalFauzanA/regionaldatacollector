@@ -121,13 +121,22 @@ def fetch(
                 if getattr(resp, "status_code", None) == 200:
                     return resp
 
-                # On 403/429, try a lightweight fallback: request once without
-                # impersonation and with simple headers (may bypass anti-bot).
-                if getattr(resp, "status_code", None) in (403, 429):
-                    status = getattr(resp, "status_code", None)
+                status = getattr(resp, "status_code", None)
+                resp_text = getattr(resp, "text", "") or ""
+                is_waf = (
+                    status == 202
+                    or "awswaf" in resp_text.lower()
+                    or "challenge.js" in resp_text.lower()
+                )
+                status_desc = (
+                    f"HTTP {status} (AWS WAF Challenge)" if is_waf else f"HTTP {status}"
+                )
+
+                # On anti-bot challenges (202 WAF, 403, 429), try lightweight fallback
+                if is_waf or status in (403, 429):
                     logger.debug(
                         "fetch received %s for %s (impersonate=%s)",
-                        status,
+                        status_desc,
                         url,
                         chosen_imp,
                     )
@@ -146,15 +155,31 @@ def fetch(
                         alt_status = getattr(alt_resp, "status_code", None)
                         if alt_status == 200:
                             return alt_resp
-                        if alt_status not in (403, 429) and alt_status is not None:
-                            return alt_resp
-                        last_exc = Exception(f"HTTP {alt_status}")
+                        alt_text = getattr(alt_resp, "text", "") or ""
+                        alt_is_waf = (
+                            alt_status == 202
+                            or "awswaf" in alt_text.lower()
+                            or "challenge.js" in alt_text.lower()
+                        )
+                        alt_desc = (
+                            f"HTTP {alt_status} (AWS WAF Challenge)"
+                            if alt_is_waf
+                            else f"HTTP {alt_status}"
+                        )
+                        last_exc = Exception(alt_desc)
                     except Exception as e:
                         last_exc = e
 
                     retry_delay = 2 + attempt * 2
                 else:
-                    return resp
+                    logger.debug(
+                        "fetch received %s for %s (impersonate=%s)",
+                        status_desc,
+                        url,
+                        chosen_imp,
+                    )
+                    last_exc = Exception(status_desc)
+                    retry_delay = 1 + attempt
 
         except Exception as e:
             last_exc = e
@@ -257,7 +282,9 @@ def is_valid_data(d):
 
 
 def _cache_item_timestamp(cache_raw, cached_item):
-    fetched_at = cached_item.get("fetched_at") if isinstance(cached_item, dict) else None
+    fetched_at = (
+        cached_item.get("fetched_at") if isinstance(cached_item, dict) else None
+    )
     if not fetched_at and isinstance(cache_raw, dict):
         fetched_at = cache_raw.get("timestamp")
     if not fetched_at:

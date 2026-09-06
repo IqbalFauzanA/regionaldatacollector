@@ -8,6 +8,7 @@ from regional_report.formatters import format_report_whatsapp, format_report
 from regional_report.parsers import (
     US_BOND_KEYS,
     _barchart_contract_months,
+    parse_barchart_coal,
     parse_bloomberg_agriculture_html,
     parse_bloomberg_metals_html,
     parse_bloomberg_quote_html,
@@ -144,6 +145,45 @@ class RequestedSourceParserTests(unittest.TestCase):
                 ("Feb", "G", 27),
             ],
         )
+
+    def test_barchart_coal_raises_on_waf_challenge(self):
+        with patch(
+            "regional_report.parsers.barchart.fetch",
+            side_effect=Exception("HTTP 202 (AWS WAF Challenge)"),
+        ):
+            with self.assertRaises(Exception) as ctx:
+                parse_barchart_coal()
+            self.assertIn("HTTP 202 (AWS WAF Challenge)", str(ctx.exception))
+
+    def test_barchart_coal_parses_tables(self):
+        html = """
+        <table>
+            <tr><th>Symbol</th><th>Last</th><th>Change</th></tr>
+            <tr><td>LQU26</td><td>113.65s</td><td>+0.50 (+0.44%)</td></tr>
+        </table>
+        """
+        resp = SimpleNamespace(status_code=200, text=html)
+        with (
+            patch(
+                "regional_report.parsers.barchart._barchart_contract_months",
+                return_value=[("Sep", "U", 26)],
+            ),
+            patch("regional_report.parsers.barchart.fetch", return_value=resp),
+        ):
+            data = parse_barchart_coal()
+            self.assertIn("Newcastle", data)
+            self.assertEqual(data["Newcastle"]["source"], "Barchart")
+            self.assertEqual(
+                data["Newcastle"]["contracts"],
+                [
+                    {
+                        "month": "Sep",
+                        "price": "113.65",
+                        "change": "+0.50",
+                        "change_pct": "+0.44%",
+                    }
+                ],
+            )
 
     def test_bloomberg_usdidr_quote(self):
         html = next_data_html(
