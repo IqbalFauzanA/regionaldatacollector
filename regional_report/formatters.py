@@ -5,7 +5,6 @@ from datetime import datetime
 
 from .commons import is_valid_data
 
-
 ALERT_MARKER = "\u203c\ufe0f"
 BULLET = "\u2022"
 EM_DASH = "\u2014"
@@ -107,7 +106,9 @@ def decorate_value(d, base=None):
         return base
 
     try:
-        abs_pct = abs(float(str(pct).replace("%", "").replace("+", "").replace(",", "")))
+        abs_pct = abs(
+            float(str(pct).replace("%", "").replace("+", "").replace(",", ""))
+        )
     except ValueError:
         return base
 
@@ -222,7 +223,7 @@ def format_report(data, market_news=None):
     lines.append("## \U0001f30f Asia")
     add_group(
         [
-            "Nikkei",
+            "Nikkei 225",
             "Shanghai",
             "HSI",
             "KOSPI",
@@ -235,8 +236,8 @@ def format_report(data, market_news=None):
     add_group(
         [
             "LQ45",
-            "Kompas 100",
             "IDX30",
+            "Kompas 100",
         ]
     )
     add_group(
@@ -278,9 +279,7 @@ def format_report(data, market_news=None):
         for label in us_bonds:
             d = data.get(label)
             if isinstance(d, dict) and is_valid_data(d):
-                value = decorate_value(
-                    d, fmt(d, suffix="%", suffix_numeric_only=True)
-                )
+                value = decorate_value(d, fmt(d, suffix="%", suffix_numeric_only=True))
                 if value:
                     lines.append(f"  - **{label}:** {value}")
     lines.append("")
@@ -338,8 +337,7 @@ def format_report(data, market_news=None):
 
     lines.append("---")
     lines.append("## Footer")
-    lines.append("- **Broker Code:** AT")
-    lines.append("- **Prepared by:** Desy Erawati / DE")
+    lines.append("- **Prepared by:** Desy Erawati / DE (Phintraco/AT)")
     lines.append(
         "- **Sources:** Bloomberg, Investing, IBPA, CNBC, Bursa Malaysia, SunSirs"
     )

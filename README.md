@@ -32,13 +32,13 @@ that text through the delivery channel.
 
 Python packages are listed in `requirements.txt`:
 
-| Package | Purpose |
-| --- | --- |
-| `curl_cffi` | HTTP requests with browser impersonation |
-| `beautifulsoup4` | HTML parsing |
-| `lxml` | XML/HTML parser |
-| `reportlab` | PDF export |
-| `pyinstaller` | Windows EXE build |
+| Package          | Purpose                                  |
+| ---------------- | ---------------------------------------- |
+| `curl_cffi`      | HTTP requests with browser impersonation |
+| `beautifulsoup4` | HTML parsing                             |
+| `lxml`           | XML/HTML parser                          |
+| `reportlab`      | PDF export                               |
+| `pyinstaller`    | Windows EXE build                        |
 
 ---
 
@@ -67,13 +67,13 @@ python -m pip install -r requirements.txt
 
 Run commands from the project root.
 
-| Command | Use case |
-| --- | --- |
-| `python regional_market_report.py` | Fresh scrape, formatted report, cache update, PDF export |
-| `python regional_market_report.py --from-cache` | Reformat the latest cached data without scraping |
-| `python regional_market_report.py --json-only` | Print raw JSON for debugging or downstream processing |
+| Command                                            | Use case                                                               |
+| -------------------------------------------------- | ---------------------------------------------------------------------- |
+| `python regional_market_report.py`                 | Fresh scrape, formatted report, cache update, PDF export               |
+| `python regional_market_report.py --from-cache`    | Reformat the latest cached data without scraping                       |
+| `python regional_market_report.py --json-only`     | Print raw JSON for debugging or downstream processing                  |
 | `python regional_market_report.py --partial-cache` | Reuse fresh valid cache first, then scrape only stale or invalid items |
-| `python regional_market_report.py --debug` | Show debug logging while scraping |
+| `python regional_market_report.py --debug`         | Show debug logging while scraping                                      |
 
 Recommended Windows command:
 
@@ -106,22 +106,22 @@ Use `output\regional_report.pdf` as the formatted archive/shareable version.
 
 ## Report Layout
 
-| Section | Contents |
-| --- | --- |
-| Header | Greeting and current report date |
-| Market News Summary | Top 5 Google News RSS market headlines |
-| US Indices | Dow, S&P 500, Nasdaq, S&P 500 VIX |
-| Europe | FTSE, DAX, CAC |
-| Asia | Nikkei, Shanghai, HSI, KOSPI 50 |
-| Indonesia | IDX, LQ45, Kompas 100, IDX30, IDX sector indices |
-| Indonesia Rates & Credit | USD/IDR, Jisdor, Indo10Yr, ICBI, IndoCDS 5yr |
-| FX & Bonds | EUR/USD, DXY, US2Yr, US10Yr, US30Yr |
-| Energy | WTI, Brent, natural gas |
-| Coal | Newcastle and Rotterdam futures contracts |
-| Metals & Mining | Gold, silver, copper, nickel, tin, aluminium, iron ore, BCOMIN |
-| Other Commodities | CPO, woodpulp, ammonia, corn, wheat, soybean oil |
-| ETFs & Stocks | EIDO, TLKM, EEM |
-| Footer | Broker code, preparer, sources, copyright |
+| Section                  | Contents                                                       |
+| ------------------------ | -------------------------------------------------------------- |
+| Header                   | Greeting and current report date                               |
+| Market News Summary      | Top 5 Google News RSS market headlines                         |
+| US Indices               | Dow, S&P 500, Nasdaq, S&P 500 VIX                              |
+| Europe                   | FTSE, DAX, CAC                                                 |
+| Asia                     | Nikkei 225, Shanghai, HSI, KOSPI 50                            |
+| Indonesia                | IDX, LQ45, Kompas 100, IDX30, IDX sector indices               |
+| Indonesia Rates & Credit | USD/IDR, Jisdor, Indo10Yr, ICBI, IndoCDS 5yr                   |
+| FX & Bonds               | EUR/USD, DXY, US2Yr, US10Yr, US30Yr                            |
+| Energy                   | WTI, Brent, natural gas                                        |
+| Coal                     | Newcastle and Rotterdam futures contracts                      |
+| Metals & Mining          | Gold, silver, copper, nickel, tin, aluminium, iron ore, BCOMIN |
+| Other Commodities        | CPO, woodpulp, ammonia, corn, wheat, soybean oil               |
+| ETFs & Stocks            | EIDO, TLKM, EEM                                                |
+| Footer                   | Broker code, preparer, sources, copyright                      |
 
 Large moves are emphasized automatically by the formatter:
 
@@ -140,12 +140,12 @@ formatted report to Telegram.
 
 ### Schedule
 
-| Item | Value |
-| --- | --- |
-| Time | Every workday at 05:30 WIB |
-| Job name | Regional Markets Screener + News |
-| Workdir | `C:\Users\satri\code\regionaldatacollector` |
-| Delivery source | `output\regional_report_whatsapp.txt` |
+| Item            | Value                                       |
+| --------------- | ------------------------------------------- |
+| Time            | Every workday at 05:30 WIB                  |
+| Job name        | Regional Markets Screener + News            |
+| Workdir         | `C:\Users\satri\code\regionaldatacollector` |
+| Delivery source | `output\regional_report_whatsapp.txt`       |
 
 ### Pipeline
 
@@ -247,13 +247,13 @@ and the modules under `regional_report\`.
 
 ## Troubleshooting
 
-| Symptom | What to check |
-| --- | --- |
-| Report has missing rows | Run with `--debug`, then retry with `--partial-cache` |
-| Telegram text includes progress logs | Read `output\regional_report_whatsapp.txt` instead of stdout |
-| PDF export fails | Confirm `reportlab` is installed |
+| Symptom                              | What to check                                                               |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| Report has missing rows              | Run with `--debug`, then retry with `--partial-cache`                       |
+| Telegram text includes progress logs | Read `output\regional_report_whatsapp.txt` instead of stdout                |
+| PDF export fails                     | Confirm `reportlab` is installed                                            |
 | EXE writes files in the wrong folder | Run it from the intended working directory or place it in the target folder |
-| Cached report is stale | Run without `--from-cache` to scrape fresh data |
+| Cached report is stale               | Run without `--from-cache` to scrape fresh data                             |
 
 ---
 

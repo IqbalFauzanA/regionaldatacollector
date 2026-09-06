@@ -90,14 +90,14 @@ def label_from_name(name):
         "ftse 100": "FTSE",
         "dax": "DAX",
         "cac 40": "CAC",
-        "nikkei 225": "Nikkei",
+        "nikkei 225": "Nikkei 225",
         "hang seng": "HSI",
         "shanghai": "Shanghai",
         "idx composite": "IDX",
         "idx lq45": "LQ45",
-        "idx kompas 100": "Kompas 100",
         "idx30": "IDX30",
         "idx 30": "IDX30",
+        "idx kompas 100": "Kompas 100",
         "u.s. 2y": "US2Yr",
         "u.s. 10y": "US10Yr",
         "u.s. 30y": "US30Yr",
@@ -264,7 +264,9 @@ def parse_phei():
                         chg_num = round(close_num - prev_num, 4)
                         if abs(chg_num) < 0.00005:
                             chg_num = 0.0
-                        pct_num = round((chg_num / prev_num) * 100, 2) if prev_num else 0.0
+                        pct_num = (
+                            round((chg_num / prev_num) * 100, 2) if prev_num else 0.0
+                        )
                         result["ICBI"] = {
                             "close": f"{close_num:.4f}",
                             "change": f"{chg_num:+.4f}",
@@ -451,12 +453,10 @@ def parse_commodities_futures():
         # the table loop repeated the same network requests for multi-table pages.
         fallback_urls = {
             "Oil WTI": [
-                "https://www.investing.com/commodities/crude-oil",
-                "https://www.investing.com/commodities/crude-oil-wti",
+                "https://www.bloomberg.com/quote/CL1:COM",
             ],
             "Oil Brent": [
-                "https://www.investing.com/commodities/brent-oil",
-                "https://www.investing.com/commodities/brent-oil-futures",
+                "https://www.bloomberg.com/quote/CO1:COM",
             ],
             "Nat Gas": [
                 "https://www.investing.com/commodities/natural-gas",
@@ -469,16 +469,12 @@ def parse_commodities_futures():
             "Nickel": ["https://www.investing.com/commodities/nickel"],
         }
         wanted_labels = dict.fromkeys(wanted_names.values())
-        for report_label in (
-            label for label in wanted_labels if label not in results
-        ):
+        for report_label in (label for label in wanted_labels if label not in results):
             for url in fallback_urls[report_label]:
                 logger.debug(
                     "Commodities: fallback try %s for label %s", url, report_label
                 )
-                parsed = parse_instrument_page(
-                    url, "Investing Futures", report_label
-                )
+                parsed = parse_instrument_page(url, "Investing Futures", report_label)
                 value = parsed.get(report_label)
                 if is_valid_data(value):
                     results[report_label] = value
@@ -495,9 +491,9 @@ BLOOMBERG_USDIDR_URL = "https://www.bloomberg.com/quote/USDIDR:CUR"
 BLOOMBERG_DXY_URL = "https://www.bloomberg.com/quote/DXY:CUR"
 BLOOMBERG_EURUSD_URL = "https://www.bloomberg.com/quote/EURUSD:CUR"
 BLOOMBERG_TIN_URL = "https://www.bloomberg.com/quote/LMSNDS03:COM"
-BLOOMBERG_METALS_URL = (
-    "https://www.bloomberg.com/markets/commodities/futures/metals"
-)
+BLOOMBERG_WTI_URL = "https://www.bloomberg.com/quote/CL1:COM"
+BLOOMBERG_BRENT_URL = "https://www.bloomberg.com/quote/CO1:COM"
+BLOOMBERG_METALS_URL = "https://www.bloomberg.com/markets/commodities/futures/metals"
 BLOOMBERG_AGRICULTURE_URL = (
     "https://www.bloomberg.com/markets/commodities/futures/agriculture"
 )
@@ -638,9 +634,7 @@ def parse_bloomberg_usdidr():
 
 def _parse_bloomberg_quote(url, ticker, label):
     try:
-        return parse_bloomberg_quote_html(
-            _fetch_bloomberg_html(url), ticker, label
-        )
+        return parse_bloomberg_quote_html(_fetch_bloomberg_html(url), ticker, label)
     except Exception as e:
         print(
             f"  WARN Bloomberg {label}: {type(e).__name__}: {str(e)[:60]}",
@@ -654,15 +648,19 @@ def parse_bloomberg_dxy():
 
 
 def parse_bloomberg_eurusd():
-    return _parse_bloomberg_quote(
-        BLOOMBERG_EURUSD_URL, "EURUSD:CUR", "EUR/USD"
-    )
+    return _parse_bloomberg_quote(BLOOMBERG_EURUSD_URL, "EURUSD:CUR", "EUR/USD")
 
 
 def parse_bloomberg_tin():
-    return _parse_bloomberg_quote(
-        BLOOMBERG_TIN_URL, "LMSNDS03:COM", "Timah"
-    )
+    return _parse_bloomberg_quote(BLOOMBERG_TIN_URL, "LMSNDS03:COM", "Timah")
+
+
+def parse_bloomberg_wti():
+    return _parse_bloomberg_quote(BLOOMBERG_WTI_URL, "CL1:COM", "Oil WTI")
+
+
+def parse_bloomberg_brent():
+    return _parse_bloomberg_quote(BLOOMBERG_BRENT_URL, "CO1:COM", "Oil Brent")
 
 
 def parse_bloomberg_metals():
@@ -690,6 +688,9 @@ def parse_bloomberg_agriculture():
 
 
 def parse_instrument_page(url, source_label, report_label):
+    if "bloomberg.com/quote/" in url:
+        ticker = url.split("/quote/")[1].split("?")[0].strip("/")
+        return _parse_bloomberg_quote(url, ticker, report_label)
     result = {}
     try:
         resp = fetch(url)
@@ -1167,12 +1168,20 @@ def parse_yahoo_idx_property():
 # ──────────────── BAR CHART COAL ────────────────
 
 
-_BARCHART_MONTH_CODES = (
-    "F", "G", "H", "J", "K", "M", "N", "Q", "U", "V", "X", "Z"
-)
+_BARCHART_MONTH_CODES = ("F", "G", "H", "J", "K", "M", "N", "Q", "U", "V", "X", "Z")
 _MONTH_ABBREVIATIONS = (
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
 )
 
 
@@ -1371,7 +1380,7 @@ MAJOR_INDEX_KEYS = (
     "DAX",
     "FTSE",
     "CAC",
-    "Nikkei",
+    "Nikkei 225",
     "Shanghai",
     "HSI",
     "KOSPI",
@@ -1385,7 +1394,7 @@ CNBC_US_INDEX_KEYS = tuple(report_label for report_label, _ in CNBC_US_INDEX_PAG
 INVESTING_MAJOR_INDEX_KEYS = tuple(
     key for key in MAJOR_INDEX_KEYS if key not in CNBC_US_INDEX_KEYS
 )
-IDX_INDEX_KEYS = ("IDX", "LQ45", "Kompas 100", "IDX30")
+IDX_INDEX_KEYS = ("IDX", "LQ45", "IDX30", "Kompas 100")
 IDX_SECTOR_KEYS = (
     "IDX Energy",
     "IDX Basic Materials",
@@ -1426,6 +1435,8 @@ REQUESTED_SOURCE_BY_KEY = {
     "IndoCDS 5yr": "WorldGovernmentBonds",
     "CPO": "Bursa Malaysia",
     "KOSPI": "KOSPI 50",
+    "Oil WTI": "Bloomberg",
+    "Oil Brent": "Bloomberg",
 }
 
 
@@ -1544,6 +1555,8 @@ def collect_data(
         ("Bloomberg DXY", parse_bloomberg_dxy, ("DXY",)),
         ("Bloomberg EUR/USD", parse_bloomberg_eurusd, ("EUR/USD",)),
         ("Bloomberg Tin", parse_bloomberg_tin, ("Timah",)),
+        ("Bloomberg WTI", parse_bloomberg_wti, ("Oil WTI",)),
+        ("Bloomberg Brent", parse_bloomberg_brent, ("Oil Brent",)),
         (
             "Bloomberg Metals",
             parse_bloomberg_metals,
@@ -1599,9 +1612,7 @@ def collect_data(
         ],
         (
             "IndoCDS",
-            lambda: parse_indonesia_cds(
-                comparison_cached_data.get("IndoCDS 5yr")
-            ),
+            lambda: parse_indonesia_cds(comparison_cached_data.get("IndoCDS 5yr")),
             ("IndoCDS 5yr",),
         ),
         ("SunSirs Ammonia", parse_ammonia, ("Ammonia",)),

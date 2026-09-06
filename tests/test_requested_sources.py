@@ -23,6 +23,8 @@ from regional_report.parsers import (
     parse_sunsirs_woodpulp,
     parse_yahoo_sector_indices,
     REQUESTED_SOURCE_BY_KEY,
+    label_from_name,
+    MAJOR_INDEX_KEYS,
 )
 
 
@@ -83,6 +85,23 @@ class RequestedSourceParserTests(unittest.TestCase):
         report = format_report_whatsapp(format_report(data))
 
         self.assertIn("*Dow:* 52500.00 -190.25 -0.36%", report)
+
+    def test_nikkei_225_label_and_formatting(self):
+        self.assertEqual(label_from_name("Nikkei 225"), "Nikkei 225")
+        self.assertIn("Nikkei 225", MAJOR_INDEX_KEYS)
+        self.assertNotIn("Nikkei", MAJOR_INDEX_KEYS)
+
+        data = {
+            "Nikkei 225": {
+                "close": "38500.00",
+                "change": "+250.00",
+                "change_pct": "+0.65%",
+            }
+        }
+        report_md = format_report(data)
+        self.assertIn("- **Nikkei 225:** 38500.00 +250.00 +0.65%", report_md)
+        report_wa = format_report_whatsapp(report_md)
+        self.assertIn("*Nikkei 225:* 38500.00 +250.00 +0.65%", report_wa)
 
     def test_table_parser_discards_rows_not_requested_by_the_report(self):
         html = """
@@ -167,9 +186,7 @@ class RequestedSourceParserTests(unittest.TestCase):
             }
         )
         result = parse_bloomberg_metals_html(html)
-        self.assertEqual(
-            set(result), {"Gold", "Gold (XAU/USD)", "Silver", "Copper"}
-        )
+        self.assertEqual(set(result), {"Gold", "Gold (XAU/USD)", "Silver", "Copper"})
         self.assertEqual(result["Silver"]["change"], "+0.88")
         self.assertEqual(result["Copper"]["close"], "620.70")
 
@@ -209,6 +226,8 @@ class RequestedSourceParserTests(unittest.TestCase):
             ("DXY:CUR", "DXY", "101.3570", -0.07, -0.07),
             ("EURUSD:CUR", "EUR/USD", "1.1384", 0.0014, 0.12),
             ("LMSNDS03:COM", "Timah", "50,553.00", 170, 0.34),
+            ("CL1:COM", "Oil WTI", "91.48", 0.18, 0.20),
+            ("CO1:COM", "Oil Brent", "96.28", 0.35, 0.36),
         ]
         for ticker, report_label, price, change, percent in cases:
             with self.subTest(ticker=ticker):
@@ -244,6 +263,8 @@ class RequestedSourceParserTests(unittest.TestCase):
             )["Timah"]["close"],
             "50553.00",
         )
+        self.assertEqual(REQUESTED_SOURCE_BY_KEY["Oil WTI"], "Bloomberg")
+        self.assertEqual(REQUESTED_SOURCE_BY_KEY["Oil Brent"], "Bloomberg")
 
     def test_bursa_third_day_row_last_done(self):
         payload = {
@@ -448,9 +469,7 @@ class RequestedSourceParserTests(unittest.TestCase):
             "EUR/USD": {"close": "1.10"},
             "DXY": {"close": "99"},
             "Oil WTI": {"close": "70"},
-            "Newcastle": {
-                "contracts": [{"month": "Jul", "price": "120"}]
-            },
+            "Newcastle": {"contracts": [{"month": "Jul", "price": "120"}]},
             "Soybean Oil": {"close": "55"},
         }
 
@@ -519,9 +538,7 @@ class RequestedSourceParserTests(unittest.TestCase):
         self.assertEqual(item["previous_date"], "2026-06-26")
         self.assertEqual(item["change"], "+1.00")
         self.assertEqual(item["source"], "WorldGovernmentBonds")
-        self.assertEqual(
-            REQUESTED_SOURCE_BY_KEY["IndoCDS 5yr"], "WorldGovernmentBonds"
-        )
+        self.assertEqual(REQUESTED_SOURCE_BY_KEY["IndoCDS 5yr"], "WorldGovernmentBonds")
 
     def test_indonesia_cds_ignores_cache_that_is_not_previous_business_day(self):
         payload = {
