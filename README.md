@@ -196,7 +196,20 @@ regionaldatacollector/
 |-- regional_market_report.py       # CLI entrypoint, cache handling, exports
 |-- regional_report/
 |   |-- commons.py                  # Shared paths, fetch helper, validation
-|   |-- parsers.py                  # Scrapers and data collection orchestration
+|   |-- parsers/                    # Modular data source scrapers & orchestration
+|   |   |-- __init__.py             # Re-exports for clean backward compatibility
+|   |   |-- base.py                 # Base table scraping & fetch dispatching
+|   |   |-- constants.py            # Key lists and REQUESTED_SOURCE_BY_KEY
+|   |   |-- bloomberg.py            # Bloomberg scrapers
+|   |   |-- cnbc.py                 # CNBC scrapers
+|   |   |-- investing.py            # Investing.com scrapers
+|   |   |-- yahoo.py                # Yahoo Finance scrapers
+|   |   |-- indonesia.py            # PHEI, JISDOR, Indo Bonds & Indo CDS
+|   |   |-- sunsirs.py              # SunSirs Ammonia & Woodpulp
+|   |   |-- barchart.py             # Barchart Coal futures
+|   |   |-- bursa.py                # Bursa Malaysia CPO
+|   |   |-- news.py                 # Google News RSS scraper
+|   |   `-- collector.py            # Concurrent collection orchestrator
 |   |-- formatters.py               # Markdown and WhatsApp report formatting
 |   `-- exports.py                  # PDF export helpers
 |-- requirements.txt                # Python dependencies
@@ -236,7 +249,7 @@ and the modules under `regional_report\`.
 ## Maintenance Notes
 
 - Keep all file I/O in UTF-8.
-- Add new instruments in `regional_report\parsers.py`, then include display
+- Add new instruments in `regional_report\parsers\<provider>.py` (and register in `constants.py` and `collector.py`), then include display
   behavior in `regional_report\formatters.py`.
 - Use `is_valid_data()` before showing optional data to avoid empty report rows.
 - Keep delivery automation pointed at `output\regional_report_whatsapp.txt`.

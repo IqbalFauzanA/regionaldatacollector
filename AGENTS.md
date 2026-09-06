@@ -8,10 +8,10 @@ Welcome, Agent! This guide is designed to help you navigate, understand, and dev
 
 To minimize unnecessary context window bloat and reduce token/credit consumption:
 
-1. **NEVER read `regional_report/parsers.py` in its entirety.**
-   - `parsers.py` is over 1,700 lines (~62 KB). Dumping it into your context consumes 15,000–20,000+ tokens in a single call.
-   - **Instead**: Use `grep_search` to locate the specific function, instrument, or data source you need (e.g., `def parse_bloomberg`, `parse_cnbc_quote_html`, or `REQUESTED_SOURCE_BY_KEY`).
-   - Then use `view_file` with precise `StartLine` and `EndLine` parameters (slices of 50–100 lines).
+1. **Read ONLY the specific parser module you need in `regional_report/parsers/`.**
+   - The parsers have been modularized into `regional_report/parsers/` (`bloomberg.py`, `cnbc.py`, `investing.py`, `yahoo.py`, `indonesia.py`, `sunsirs.py`, `barchart.py`, `bursa.py`, `news.py`, `constants.py`, `collector.py`).
+   - Each module is small (~50–200 lines). **NEVER** open multiple parser modules at once or dump unnecessary files into context.
+   - Simply view the specific provider file you need (e.g. `parsers/bloomberg.py` or `parsers/sunsirs.py`).
 
 2. **NEVER run live scraping to test formatting, export, or logic changes.**
    - Running `python regional_market_report.py` without flags triggers network calls across dozens of financial websites, taking 45–60 seconds, risking IP rate-limits (403/429), and cluttering your tool output.
@@ -43,14 +43,14 @@ To minimize unnecessary context window bloat and reduce token/credit consumption
 > [!TIP]
 > On Windows PowerShell, the console defaults to `cp1252`. When printing terminal reports containing emojis, prefix with `$env:PYTHONIOENCODING="utf-8";` to prevent `UnicodeEncodeError`.
 
-| Task | Command | When to use |
-|---|---|---|
-| **Run Unit Tests** | `.\.venv\Scripts\python.exe -m unittest discover tests` | Before and after any code change (runs in 0.02s). |
-| **Run Single Test File** | `.\.venv\Scripts\python.exe -m unittest tests/test_requested_sources.py` | When updating a specific parser. |
-| **Test Output / Formatter** | `$env:PYTHONIOENCODING="utf-8"; .\.venv\Scripts\python.exe regional_market_report.py --from-cache` | Instant re-generation of output text and PDF. |
-| **Inspect JSON Output** | `.\.venv\Scripts\python.exe regional_market_report.py --json-only` | Validating the parsed data dictionary structure. |
-| **Debug Scraper Issues** | `$env:PYTHONIOENCODING="utf-8"; .\.venv\Scripts\python.exe regional_market_report.py --debug` | Investigating network or parsing failures with verbose logging. |
-| **Build Standalone Windows EXE** | `.\.venv\Scripts\python.exe -m PyInstaller --onefile --clean --name regional_market_report regional_market_report.py` | Packaging executable for production. |
+| Task                             | Command                                                                                                               | When to use                                                     |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Run Unit Tests**               | `.\.venv\Scripts\python.exe -m unittest discover tests`                                                               | Before and after any code change (runs in 0.02s).               |
+| **Run Single Test File**         | `.\.venv\Scripts\python.exe -m unittest tests/test_requested_sources.py`                                              | When updating a specific parser.                                |
+| **Test Output / Formatter**      | `$env:PYTHONIOENCODING="utf-8"; .\.venv\Scripts\python.exe regional_market_report.py --from-cache`                    | Instant re-generation of output text and PDF.                   |
+| **Inspect JSON Output**          | `.\.venv\Scripts\python.exe regional_market_report.py --json-only`                                                    | Validating the parsed data dictionary structure.                |
+| **Debug Scraper Issues**         | `$env:PYTHONIOENCODING="utf-8"; .\.venv\Scripts\python.exe regional_market_report.py --debug`                         | Investigating network or parsing failures with verbose logging. |
+| **Build Standalone Windows EXE** | `.\.venv\Scripts\python.exe -m PyInstaller --onefile --clean --name regional_market_report regional_market_report.py` | Packaging executable for production.                            |
 
 ---
 
@@ -61,7 +61,20 @@ regionaldatacollector/
 ├── regional_market_report.py   # CLI entry point, cache handling, output dispatching
 ├── regional_report/            # Core package
 │   ├── commons.py              # Paths, HTTP client (curl_cffi), host semaphores, validation
-│   ├── parsers.py              # Web scrapers, source mappings, collect_data orchestration (>1.7k lines!)
+│   ├── parsers/                # Modular scraper package
+│   │   ├── __init__.py         # Package exports & backwards-compatibility facade
+│   │   ├── base.py             # Shared table parser, fetch dispatcher, label helpers
+│   │   ├── constants.py        # Target keys & REQUESTED_SOURCE_BY_KEY mappings
+│   │   ├── bloomberg.py        # Bloomberg quotes & Next.js page props scrapers
+│   │   ├── cnbc.py             # CNBC quote scrapers
+│   │   ├── investing.py        # Investing.com futures & instrument pages
+│   │   ├── yahoo.py            # Yahoo Finance indices & chart APIs
+│   │   ├── indonesia.py        # PHEI, JISDOR, Indo Bonds & Indo CDS
+│   │   ├── sunsirs.py          # SunSirs Ammonia & Woodpulp
+│   │   ├── barchart.py         # Barchart Coal futures & contract months
+│   │   ├── bursa.py            # Bursa Malaysia CPO
+│   │   ├── news.py             # Google News RSS scraper
+│   │   └── collector.py        # Concurrent collection orchestrator (collect_data)
 │   ├── formatters.py           # Markdown & WhatsApp/Telegram plain-text formatters
 │   └── exports.py              # ReportLab PDF generator & text sanitizers
 ├── tests/                      # Unit test suite (Mock-based, fast offline tests)
@@ -90,10 +103,10 @@ regionaldatacollector/
    - `is_valid_data(d)`: Validates parsed metrics (checks for non-empty price/close or contract prices).
    - `strip_preview_emoji(text)`: Removes multi-byte unicode emoji sequences and variation selectors (`\ufe0f`) to prevent ReportLab font crashes.
 
-3. **`regional_report/parsers.py`**:
-   - Contains individual parsers for Bloomberg, CNBC, Investing.com, Barchart, SunSirs, Bursa Malaysia, Bank Indonesia (Jisdor), PHEI, etc.
-   - `REQUESTED_SOURCE_BY_KEY`: Authoritative dictionary mapping each data key to its required source provider (e.g., `"Dow": "CNBC"`, `"USD/IDR": "Bloomberg"`).
-   - `collect_data(...)`: Orchestrates concurrent scraper execution via `ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS)` and handles partial cache fallback.
+3. **`regional_report/parsers/`**:
+   - Clean, modular provider-specific parsers (`bloomberg.py`, `cnbc.py`, `investing.py`, `yahoo.py`, `indonesia.py`, `sunsirs.py`, `barchart.py`, `bursa.py`, `news.py`).
+   - `constants.py`: Authoritative dictionary mapping each data key to its required source provider (`REQUESTED_SOURCE_BY_KEY`).
+   - `collector.py`: Orchestrates concurrent scraper execution (`collect_data(...)`) via `ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS)` and handles partial cache fallback.
 
 4. **`regional_report/formatters.py`**:
    - `format_report(data, market_news)`: Generates structured Markdown.
@@ -110,6 +123,7 @@ regionaldatacollector/
 Parsed instrument data is stored as a dictionary of key-value pairs in `data`:
 
 ### Standard Quote Format
+
 ```python
 {
     "close": "45295.81",      # Required: Last/close price as string
@@ -121,6 +135,7 @@ Parsed instrument data is stored as a dictionary of key-value pairs in `data`:
 ```
 
 ### Multi-Contract / Futures Format (e.g., Coal)
+
 ```python
 {
     "contracts": [
@@ -142,25 +157,29 @@ Parsed instrument data is stored as a dictionary of key-value pairs in `data`:
 ## 🔄 5. SOP for Common Development Tasks
 
 ### Task A: Updating or Fixing a Parser (e.g. Website HTML Changed)
-1. **Find the Parser**: Run `grep_search` on `regional_report/` for the function or URL.
-2. **Inspect Slices Only**: Use `view_file` specifying the lines around the target parser.
+
+1. **Find the Parser**: Open the corresponding module in `regional_report/parsers/` (e.g., `bloomberg.py`, `cnbc.py`, `sunsirs.py`).
+2. **Inspect Code**: Because modules are small (~50–200 lines), you can view the entire module without context bloat.
 3. **Write Unit Tests First**: Open `tests/test_requested_sources.py`. Notice how HTML fixtures are passed directly to the parser function (e.g., `parse_cnbc_quote_html(html, "Dow")`).
 4. **Implement the Fix**: Update parsing logic (handling selector changes, regex tweaks, or JSON payload changes).
 5. **Verify**: Run `.\.venv\Scripts\python.exe -m unittest tests/test_requested_sources.py`.
 
 ### Task B: Adding a New Financial Instrument
-1. **Add Scraper**: Implement the parser function in `regional_report/parsers.py`.
-2. **Register Source**: Add entry to `REQUESTED_SOURCE_BY_KEY` in `parsers.py`:
+
+1. **Add Scraper**: Implement the parser function in `regional_report/parsers/<provider>.py` (or a new module if adding a new provider).
+2. **Register Source**: Add entry to `REQUESTED_SOURCE_BY_KEY` in `regional_report/parsers/constants.py`:
    ```python
    REQUESTED_SOURCE_BY_KEY["New Instrument"] = "Source Provider"
    ```
 3. **Register Task in `collect_data()`**:
-   - Add the task tuple to `tasks` or `single_pages` in `collect_data()` in `parsers.py`.
-4. **Update Formatter**: Add display handling in `regional_report/formatters.py` within the relevant section (e.g., Metals, Commodities, Asia Indices).
-5. **Add Unit Test**: Add test case in `tests/test_requested_sources.py` using sample HTML/payload.
-6. **Verify End-to-End**: Test with `python regional_market_report.py --from-cache` or run tests.
+   - Add the task tuple to `tasks` or `single_pages` in `collect_data()` in `regional_report/parsers/collector.py`.
+4. **Re-export in `__init__.py`**: Add any new public symbols to `regional_report/parsers/__init__.py`.
+5. **Update Formatter**: Add display handling in `regional_report/formatters.py` within the relevant section (e.g., Metals, Commodities, Asia Indices).
+6. **Add Unit Test**: Add test case in `tests/test_requested_sources.py` using sample HTML/payload.
+7. **Verify End-to-End**: Test with `python regional_market_report.py --from-cache` or run tests.
 
 ### Task C: Modifying Report Formatting or Layout
+
 1. **Locate Target Section**: Search `regional_report/formatters.py` for the section name (e.g., `*🇺🇸 US Indices*`, `Energy`, etc.).
 2. **Edit**: Modify layout or thresholds (e.g., alert marker threshold `> 3%`).
 3. **Verify Instantly**:
@@ -170,6 +189,7 @@ Parsed instrument data is stored as a dictionary of key-value pairs in `data`:
 4. Check `output\regional_report_whatsapp.txt` to confirm formatting is clean.
 
 ### Task D: Adjusting PDF Styling
+
 1. Edit `regional_report/exports.py`.
 2. **CRITICAL**: Never pass un-sanitized strings or raw emoji to ReportLab. ReportLab will either fail or render stray dingbat characters (`n`). Ensure `strip_preview_emoji()` is applied.
 3. Run `.\.venv\Scripts\python.exe -m unittest tests/test_exports.py`.
