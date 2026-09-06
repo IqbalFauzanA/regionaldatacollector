@@ -586,6 +586,31 @@ class RequestedSourceParserTests(unittest.TestCase):
         self.assertIn("• *TLKM:* 16.06 -0.04 -0.28%", report)
         self.assertIn("        (2546)", report)
 
+    def test_missing_instruments_render_fetch_failed_indicator(self):
+        report = format_report({})
+        self.assertIn("- **USD/IDR:** [Fetch Failed]", report)
+        self.assertIn("- **EUR/USD:** [Fetch Failed]", report)
+        self.assertIn("- **DXY:** [Fetch Failed]", report)
+        self.assertIn("- **Gold:** [Fetch Failed]", report)
+        self.assertIn("- **Gold (XAU/USD):** [Fetch Failed]", report)
+        self.assertIn("- **Timah:** [Fetch Failed]", report)
+        self.assertIn("- **Newcastle:** [Fetch Failed]", report)
+        self.assertIn("  - **US2Yr:** [Fetch Failed]", report)
+
+    def test_fetch_failed_whatsapp_formatting(self):
+        report = format_report_whatsapp(format_report({}))
+        self.assertIn("• *USD/IDR:* [Fetch Failed]", report)
+        self.assertIn("• *Gold:* [Fetch Failed]", report)
+        self.assertIn("  • *US2Yr:* [Fetch Failed]", report)
+
+    def test_valid_instruments_render_normally_alongside_failed(self):
+        data = {
+            "USD/IDR": {"close": "16250", "change": "+25", "change_pct": "+0.15%"},
+        }
+        report = format_report(data)
+        self.assertIn("- **USD/IDR:** 16250 +25 +0.15%", report)
+        self.assertIn("- **EUR/USD:** [Fetch Failed]", report)
+
 
 if __name__ == "__main__":
     unittest.main()

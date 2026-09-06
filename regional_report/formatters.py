@@ -153,6 +153,8 @@ def format_report(data, market_news=None):
         value = kv(label, **options)
         if value:
             lines.append(f"- **{label}:** {value}")
+        else:
+            lines.append(f"- **{label}:** [Fetch Failed]")
 
     def add_group(labels, **options):
         for label in labels:
@@ -271,17 +273,17 @@ def format_report(data, market_news=None):
     add_line("DXY", decorate=False)
 
     us_bonds = ["US2Yr", "US10Yr", "US30Yr"]
-    if any(
-        isinstance(data.get(label), dict) and is_valid_data(data.get(label))
-        for label in us_bonds
-    ):
-        lines.append("- **US Treasuries:**")
-        for label in us_bonds:
-            d = data.get(label)
-            if isinstance(d, dict) and is_valid_data(d):
-                value = decorate_value(d, fmt(d, suffix="%", suffix_numeric_only=True))
-                if value:
-                    lines.append(f"  - **{label}:** {value}")
+    lines.append("- **US Treasuries:**")
+    for label in us_bonds:
+        d = data.get(label)
+        if isinstance(d, dict) and is_valid_data(d):
+            value = decorate_value(d, fmt(d, suffix="%", suffix_numeric_only=True))
+            if value:
+                lines.append(f"  - **{label}:** {value}")
+            else:
+                lines.append(f"  - **{label}:** [Fetch Failed]")
+        else:
+            lines.append(f"  - **{label}:** [Fetch Failed]")
     lines.append("")
 
     lines.append("## \U0001f6e2\ufe0f Energy")
@@ -303,13 +305,13 @@ def format_report(data, market_news=None):
                 month = contract.get("month", "")
                 if month and value:
                     lines.append(f"  - **{month}:** {value}")
+        else:
+            lines.append(f"- **{label}:** [Fetch Failed]")
     lines.append("")
 
     lines.append("## \U0001f3d7\ufe0f Metals & Mining")
     add_line("Gold")
-    gold_spot = data.get("Gold (XAU/USD)")
-    if isinstance(gold_spot, dict) and is_valid_data(gold_spot):
-        add_line("Gold (XAU/USD)")
+    add_line("Gold (XAU/USD)")
     add_group(
         [
             "Silver",

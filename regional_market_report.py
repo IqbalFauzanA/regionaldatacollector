@@ -140,7 +140,7 @@ def main(argv=None):
             cache_raw=cache_raw if partial_cache_mode else None,
             comparison_cache_raw=cache_raw,
         )
-        if partial_cache_mode:
+        if partial_cache_mode or cache_raw:
             raw_out = _merge_partial_cache(cache_raw, data, sources, timestamp)
         else:
             raw_out = {
